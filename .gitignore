@@ -1,0 +1,6 @@
+.env
+node_modules/
+node-v*.msi
+node-install-*.log
+.npmrc
+patch-os-userinfo.cjs
