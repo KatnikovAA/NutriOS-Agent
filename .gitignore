@@ -4,3 +4,5 @@ node-v*.msi
 node-install-*.log
 .npmrc
 patch-os-userinfo.cjs
+.next/
+data/*.md
