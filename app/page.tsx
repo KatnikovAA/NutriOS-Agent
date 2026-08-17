@@ -1,7 +1,18 @@
 "use client";
 
 import { FormEvent, useMemo, useState } from "react";
-import { AlertCircle, CheckCircle2, ClipboardList, Loader2, ShieldCheck, Stethoscope } from "lucide-react";
+import type { ReactNode } from "react";
+import {
+  AlertCircle,
+  CheckCircle2,
+  ClipboardList,
+  History,
+  Loader2,
+  ShieldCheck,
+  Stethoscope,
+  Timer,
+  TrendingUp,
+} from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
 import { Badge } from "@/components/ui/badge";
@@ -15,7 +26,11 @@ type ReviewVerdict = "approve" | "revise" | "needs_human_professional";
 type Result = {
   plan: string | null;
   review: { verdict: ReviewVerdict; score: number; issues: string[] };
-  rounds: number;
+  rounds: { round: number; plan: string; review: { verdict: ReviewVerdict; score: number; issues: string[] } }[];
+  finalScore: number;
+  improved: boolean;
+  promptVersions: { coach: string; reviewer: string };
+  durationMs: number;
 };
 
 const verdictLabels: Record<ReviewVerdict, string> = {
@@ -29,6 +44,11 @@ const exampleTasks = [
   "помоги распределить воду и приемы пищи на рабочий день",
   "сделай мягкий план восстановления после позднего ужина",
 ];
+
+const formatDuration = (durationMs: number) => {
+  if (durationMs < 1000) return `${durationMs} мс`;
+  return `${(durationMs / 1000).toFixed(1)} с`;
+};
 
 export default function Home() {
   const [task, setTask] = useState("составь план питания на завтра");
@@ -161,8 +181,8 @@ export default function Home() {
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-3 gap-3">
                   <Metric label="Состояние" value={status === "running" ? "В работе" : status === "result" ? "Готово" : "Ожидает"} />
-                  <Metric label="Раунды" value={result ? String(result.rounds) : "-"} />
-                  <Metric label="Score" value={review ? `${review.score}/10` : "-"} />
+                  <Metric label="Раунды" value={result ? String(result.rounds.length) : "-"} />
+                  <Metric label="Score" value={result ? `${result.finalScore}/10` : "-"} />
                 </div>
 
                 <Separator />
@@ -170,6 +190,7 @@ export default function Home() {
                 <div className="flex flex-wrap gap-2">
                   <Badge variant={verdictVariant}>{review ? verdictLabels[review.verdict] : "Нет результата"}</Badge>
                   <Badge variant="outline">Profile + log context</Badge>
+                  {result && <Badge variant="outline">{formatDuration(result.durationMs)}</Badge>}
                 </div>
               </CardContent>
             </Card>
@@ -236,8 +257,21 @@ export default function Home() {
               <CardContent className="space-y-4">
                 <div className="grid grid-cols-2 gap-3">
                   <Metric label="Verdict" value={verdictLabels[result.review.verdict]} />
-                  <Metric label="Score" value={`${result.review.score}/10`} />
+                  <Metric label="Final score" value={`${result.finalScore}/10`} />
+                  <Metric label="Duration" value={formatDuration(result.durationMs)} icon={<Timer className="size-3" aria-hidden="true" />} />
+                  <Metric
+                    label="Improved"
+                    value={result.improved ? "Да" : "Нет"}
+                    icon={<TrendingUp className="size-3" aria-hidden="true" />}
+                  />
                 </div>
+                <Separator />
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <PromptVersion label="Coach prompt" value={result.promptVersions.coach} />
+                  <PromptVersion label="Reviewer prompt" value={result.promptVersions.reviewer} />
+                </div>
+                <Separator />
+                <RoundHistory rounds={result.rounds} />
                 <Separator />
                 <div className="space-y-2">
                   <h2 className="text-sm font-medium">Issues</h2>
@@ -262,11 +296,47 @@ export default function Home() {
   );
 }
 
-function Metric({ label, value }: { label: string; value: string }) {
+function Metric({ label, value, icon }: { label: string; value: string; icon?: ReactNode }) {
   return (
     <div className="rounded-md border bg-background px-3 py-2">
-      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        {icon}
+        {label}
+      </div>
       <div className="mt-1 truncate text-sm font-semibold tabular-nums">{value}</div>
     </div>
+  );
+}
+
+function PromptVersion({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded-md bg-muted px-3 py-2">
+      <div className="text-xs text-muted-foreground">{label}</div>
+      <div className="mt-1 text-sm font-semibold">{value}</div>
+    </div>
+  );
+}
+
+function RoundHistory({ rounds }: { rounds: Result["rounds"] }) {
+  return (
+    <details className="rounded-md border bg-background px-3 py-2">
+      <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium">
+        <History className="size-4 text-primary" aria-hidden="true" />
+        История раундов
+        <Badge variant="secondary" className="ml-auto">
+          {rounds.length}
+        </Badge>
+      </summary>
+      <ul className="mt-3 space-y-2">
+        {rounds.map((round) => (
+          <li key={round.round} className="flex items-center justify-between gap-3 rounded-md bg-muted px-3 py-2 text-sm">
+            <span className="truncate">round {round.round} — {verdictLabels[round.review.verdict]}</span>
+            <Badge variant="outline" className="shrink-0">
+              {round.review.score}/10
+            </Badge>
+          </li>
+        ))}
+      </ul>
+    </details>
   );
 }

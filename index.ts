@@ -8,10 +8,12 @@ async function main() {
 
   const result = await runHealthAgent(task);
   if (result.review.verdict === "needs_human_professional") {
-    console.log("Запрос требует консультации профильного специалиста. План не сохранен.");
+    console.log(`Запрос требует консультации профильного специалиста. score=${result.finalScore}. План не сохранен.`);
     return;
   }
-  console.log(`Approved. score=${result.review.score}. План сохранен в data/output.md`);
+  console.log(
+    `Approved. score=${result.finalScore}. rounds=${result.rounds.length}. durationMs=${result.durationMs}. План сохранен в data/output.md`,
+  );
 }
 
 main().catch((error) => {
