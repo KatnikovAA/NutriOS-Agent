@@ -9,15 +9,16 @@
 - `app/globals.css` содержит Tailwind CSS v4, shadcn/ui design tokens и базовые стили приложения.
 - `components/ui/` содержит локальные shadcn-style UI-примитивы, которые можно расширять через `className`.
 - `src/lib/utils.ts` содержит `cn()` для объединения Tailwind-классов через `clsx` и `tailwind-merge`.
-- `prompts/healthCoach.v1.md` и `prompts/safetyReviewer.v1.md` содержат активные версии системных промптов. Для новой версии создавайте новый файл, например `healthCoach.v2.md`, и меняйте `ACTIVE_PROMPTS` в `src/harness/promptVersions.ts`.
-- `src/agents/healthCoach.ts` и `src/agents/safetyReviewer.ts` описывают фабрики двух агентов Agents SDK; текст промптов в код не возвращайте.
-- `src/harness/runHealthAgent.ts` содержит оркестрацию: чтение файлового контекста, генерацию плана, review loop, расчет метаданных и запись итогового результата.
+- `prompts/healthCoach.v2.md` и `prompts/safetyReviewer.v1.md` содержат активные версии системных промптов. Для новой версии создавайте новый файл, например `healthCoach.v3.md`, и меняйте `ACTIVE_PROMPTS` в `src/harness/promptVersions.ts`.
+- `src/agents/healthCoach.ts` и `src/agents/safetyReviewer.ts` описывают фабрики двух агентов Agents SDK; текст промптов в код не возвращайте. Tools подключаются только к Health Coach Agent, reviewer должен оставаться без tools и побочных эффектов.
+- `src/skills/` содержит локальные function tools коуча: профиль, дневник, рецепты, тренировки, сохранение плана и список покупок. Каждый tool держит собственную Zod-схему параметров и модельное описание рядом с реализацией.
+- `src/harness/runHealthAgent.ts` содержит оркестрацию: запуск tool-driven коуча без подстановки всего `data/profile.md` и `data/log.md` в prompt, review loop, расчет метаданных и post-approve сохранение итогового результата через `savePlan`.
 - `src/harness/validateReview.ts` содержит Zod-схему reviewer-а и safe-parse JSON с одним ретраем.
 - `src/harness/rounds.ts` содержит `RoundState` и работу с историей раундов.
 - `src/harness/score.ts` содержит расчет `finalScore` и флага `improved`.
 - `src/harness/promptVersions.ts` содержит `ACTIVE_PROMPTS` и загрузку prompt-файлов по имени и версии.
 - `index.ts` является тонким CLI-враппером над `runHealthAgent`.
-- `data/profile.md`, `data/log.md` и `data/output.md` являются локальными runtime markdown-файлами и игнорируются Git.
+- `data/profile.md`, `data/log.md`, `data/output.md`, `data/shopping.md` и `data/recipes.md` являются локальными runtime markdown-файлами и игнорируются Git.
 
 ## Команды сборки, проверки и разработки
 
@@ -40,13 +41,15 @@
 
 Используйте токены из `app/globals.css`: `background`, `foreground`, `card`, `primary`, `secondary`, `muted`, `destructive`, `border`, `input` и `ring`. Не возвращайте основной UI к inline styles; допускайте inline styles только для динамических значений, которые неудобно выразить классами Tailwind.
 
-Дизайн приложения должен оставаться рабочей панелью, а не лендингом: компактные карточки, понятные состояния загрузки/ошибки/safety review, доступные focus states и русская продуктовая копия для пользовательского workflow. UI результата должен показывать `durationMs`, активные версии промптов, `finalScore`, `improved` и свёрнутую историю `rounds`. Цветовая схема нейтральная с приглушенным wellness-акцентом; избегайте декоративных AI-градиентов и лишней иллюстративности.
+Дизайн приложения должен оставаться рабочей панелью, а не лендингом: компактные карточки, понятные состояния загрузки/ошибки/safety review, доступные focus states и русская продуктовая копия для пользовательского workflow. UI результата должен показывать `durationMs`, активные версии промптов, `finalScore`, `improved`, свёрнутую историю `rounds` и список `toolCalls` в блоке «Что сделал агент». Цветовая схема нейтральная с приглушенным wellness-акцентом; избегайте декоративных AI-градиентов и лишней иллюстративности.
 
 ## Правила проверки
 
-Автоматические тесты в этом проекте сейчас не требуются. Проверяйте изменения через `npm run build` и минимум один ручной запуск агента через UI или CLI. Для изменения harness проверьте, что одобренный план записывается в `data/output.md` и результат содержит `rounds`, `finalScore`, `promptVersions` и `durationMs`. При изменении кода агентом не пиши тесты и не используй TDD. Для изменений safety boundary проверяйте обычную wellness-задачу и медицинский либо связанный с добавками запрос, например:
+Автоматические тесты в этом проекте сейчас не требуются. Проверяйте изменения через `npm run build` и минимум один ручной запуск агента через UI или CLI. Для изменения harness проверьте, что одобренный план записывается в `data/output.md` через `savePlan`, список покупок записывается в `data/shopping.md` через `generateShoppingList`, а результат содержит `rounds`, `finalScore`, `promptVersions`, `durationMs` и `toolCalls`. При изменении кода агентом не пиши тесты и не используй TDD. Для изменений safety boundary проверяйте обычную wellness-задачу и медицинский либо связанный с добавками запрос, например:
 
 - `составь план питания на завтра`
+- `план питания на завтра с учетом моего лога`
+- `составь список покупок к плану`
 - `подбери мне лекарство от давления`
 - `какие добавки купить для еды`
 
@@ -58,7 +61,7 @@ Pull request должен включать краткое описание, ша
 
 ## Безопасность и конфигурация
 
-Не коммитьте `.env`, `.npmrc`, `patch-os-userinfo.cjs`, `.next/`, `node_modules/` и `data/*.md`. Храните ключи DeepSeek только в `.env`. Приложение не должно добавлять авторизацию, базы данных, tools/function calling, стриминг или постоянную историю пользователя, пока не изменится scope проекта.
+Не коммитьте `.env`, `.npmrc`, `patch-os-userinfo.cjs`, `.next/`, `node_modules/` и `data/*.md`. Храните ключи DeepSeek только в `.env`. Приложение не должно добавлять авторизацию, базы данных, MCP, embeddings, внешние tools/API, стриминг или постоянную историю пользователя, пока не изменится scope проекта.
 
 ## Принципы кодовой базы
 -	Поддерживать кодовую базу в высокомодульном состоянии и с хорошей документацией

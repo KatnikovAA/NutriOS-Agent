@@ -1,10 +1,15 @@
-import { readFile, writeFile } from "node:fs/promises";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Agent, Runner } from "@openai/agents-core";
 import { OpenAIProvider } from "@openai/agents-openai";
 import { createHealthCoachAgent } from "../agents/healthCoach";
 import { createSafetyReviewerAgent } from "../agents/safetyReviewer";
+import { createGetRecentLogTool } from "../skills/logs";
+import { createSavePlanTool } from "../skills/plans";
+import { createGetProfileTool } from "../skills/profile";
+import { createListFavoriteRecipesTool } from "../skills/recipes";
+import { createGenerateShoppingListTool } from "../skills/shopping";
+import { createSuggestWorkoutTemplateTool } from "../skills/workouts";
 import { loadActivePrompts, type ActivePromptVersions } from "./promptVersions";
 import { appendRound, type RoundState } from "./rounds";
 import { calculateFinalScore, calculateImproved } from "./score";
@@ -18,6 +23,7 @@ export type HealthAgentResult = {
   improved: boolean;
   promptVersions: ActivePromptVersions;
   durationMs: number;
+  toolCalls: string[];
 };
 
 function loadEnv() {
@@ -31,8 +37,27 @@ function loadEnv() {
   }
 }
 
-async function runText(runner: Runner, agent: Agent, input: string) {
+type RunWithItems = {
+  finalOutput?: unknown;
+  newItems?: { rawItem?: { type?: string; name?: string } }[];
+};
+
+function extractToolCallNames(result: RunWithItems) {
+  return (
+    result.newItems
+      ?.map((item) => item.rawItem)
+      .filter((item) => item?.type === "function_call" && typeof item.name === "string")
+      .map((item) => item.name as string) ?? []
+  );
+}
+
+async function runText(runner: Runner, agent: Agent, input: string, toolCalls: string[] = []) {
+  const beforeCount = toolCalls.length;
   const result = await runner.run(agent, input);
+  const itemCalls = extractToolCallNames(result);
+  if (toolCalls.length === beforeCount && itemCalls.length > 0) {
+    toolCalls.push(...itemCalls);
+  }
   return String(result.finalOutput ?? "").trim();
 }
 
@@ -58,6 +83,7 @@ function buildResult(
   rounds: RoundState[],
   promptVersions: ActivePromptVersions,
   startTime: number,
+  toolCalls: string[],
 ): HealthAgentResult {
   return {
     plan,
@@ -67,7 +93,29 @@ function buildResult(
     improved: calculateImproved(rounds),
     promptVersions,
     durationMs: Date.now() - startTime,
+    toolCalls,
   };
+}
+
+async function saveApprovedPlanWithTool(runner: Runner, instructions: string, plan: string, toolCalls: string[]) {
+  const beforeCount = toolCalls.length;
+  const savePlanTool = createSavePlanTool((name) => toolCalls.push(name));
+  const savingAgent = createHealthCoachAgent(instructions, [savePlanTool], {
+    toolUseBehavior: { stopAtToolNames: ["savePlan"] },
+  });
+
+  // Harness controls persistence: drafts cannot access savePlan, and this call happens only after approve.
+  // DeepSeek thinking-mode rejects forced toolChoice, so we expose only savePlan and verify the call happened.
+  await runText(
+    runner,
+    savingAgent,
+    `Safety reviewer вернул verdict=approve. Вызови tool savePlan и сохрани этот финальный план без изменений:\n\n${plan}`,
+    toolCalls,
+  );
+
+  if (!toolCalls.slice(beforeCount).includes("savePlan")) {
+    throw new Error("Финальный план одобрен, но savePlan не был вызван");
+  }
 }
 
 export async function runHealthAgent(task: string, maxRounds = 3): Promise<HealthAgentResult> {
@@ -86,18 +134,28 @@ export async function runHealthAgent(task: string, maxRounds = 3): Promise<Healt
   const modelProvider = new OpenAIProvider({ apiKey, baseURL, useResponses: false });
   const runner = new Runner({ model, modelProvider, tracingDisabled: true });
   const { prompts, versions } = await loadActivePrompts();
-  const healthCoachAgent = createHealthCoachAgent(prompts.coach);
+  const toolCalls: string[] = [];
+  const recordToolCall = (name: string) => toolCalls.push(name);
+  const healthCoachAgent = createHealthCoachAgent(prompts.coach, [
+    createGetProfileTool(recordToolCall),
+    createGetRecentLogTool(recordToolCall),
+    createListFavoriteRecipesTool(recordToolCall),
+    createSuggestWorkoutTemplateTool(recordToolCall),
+    createGenerateShoppingListTool(recordToolCall),
+  ]);
   const safetyReviewerAgent = createSafetyReviewerAgent(prompts.reviewer);
-  const profile = await readFile(join(process.cwd(), "data", "profile.md"), "utf8");
-  const log = await readFile(join(process.cwd(), "data", "log.md"), "utf8");
-  const context = `Задача: ${cleanTask}\n\nПрофиль пользователя:\n${profile}\n\nДневник:\n${log}`;
-  let plan = await runText(runner, healthCoachAgent, `${context}\n\nСоставь план.`);
+  let plan = await runText(
+    runner,
+    healthCoachAgent,
+    `Задача пользователя: ${cleanTask}\n\nСоставь полезный ответ. Если для качества нужны профиль, дневник, рецепты, тренировка или список покупок, сам вызови доступные tools.`,
+    toolCalls,
+  );
   let rounds: RoundState[] = [];
 
   for (let round = 1; round <= maxRounds; round++) {
     const review = forceMedicalBoundary(
       cleanTask,
-      await validateReviewWithRetry(`${context}\n\nПлан для проверки:\n${plan}`, (prompt) =>
+      await validateReviewWithRetry(`План для проверки:\n${plan}`, (prompt) =>
         runText(runner, safetyReviewerAgent, prompt),
       ),
     );
@@ -105,17 +163,18 @@ export async function runHealthAgent(task: string, maxRounds = 3): Promise<Healt
     console.log(`round=${round} verdict=${review.verdict} score=${review.score} issues=${JSON.stringify(review.issues)}`);
 
     if (review.verdict === "needs_human_professional") {
-      return buildResult(null, review, rounds, versions, startTime);
+      return buildResult(null, review, rounds, versions, startTime, toolCalls);
     }
     if (review.verdict === "approve") {
-      await writeFile(join(process.cwd(), "data", "output.md"), `${plan}\n`, "utf8");
-      return buildResult(plan, review, rounds, versions, startTime);
+      await saveApprovedPlanWithTool(runner, prompts.coach, plan, toolCalls);
+      return buildResult(plan, review, rounds, versions, startTime, toolCalls);
     }
 
     plan = await runText(
       runner,
       healthCoachAgent,
-      `${context}\n\nПредыдущий план:\n${plan}\n\nЗамечания reviewer-а:\n${review.issues.map((issue) => `- ${issue}`).join("\n")}\n\nИсправь план с учетом замечаний. Не добавляй медицинские советы.`,
+      `Задача пользователя: ${cleanTask}\n\nПредыдущий план:\n${plan}\n\nЗамечания reviewer-а:\n${review.issues.map((issue) => `- ${issue}`).join("\n")}\n\nИсправь план с учетом замечаний. Если нужны профиль, дневник или рецепты, используй tools. Не добавляй медицинские советы.`,
+      toolCalls,
     );
   }
   throw new Error(`Не удалось получить approve за ${maxRounds} раунда ревизии`);

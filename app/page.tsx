@@ -12,6 +12,7 @@ import {
   Stethoscope,
   Timer,
   TrendingUp,
+  Wrench,
 } from "lucide-react";
 
 import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert";
@@ -31,6 +32,7 @@ type Result = {
   improved: boolean;
   promptVersions: { coach: string; reviewer: string };
   durationMs: number;
+  toolCalls: string[];
 };
 
 const verdictLabels: Record<ReviewVerdict, string> = {
@@ -40,10 +42,19 @@ const verdictLabels: Record<ReviewVerdict, string> = {
 };
 
 const exampleTasks = [
-  "составь план питания на завтра",
-  "помоги распределить воду и приемы пищи на рабочий день",
+  "план питания на завтра с учетом моего лога",
+  "составь список покупок к плану",
   "сделай мягкий план восстановления после позднего ужина",
 ];
+
+const toolLabels: Record<string, string> = {
+  getProfile: "Прочитал профиль",
+  getRecentLog: "Проверил дневник",
+  listFavoriteRecipes: "Посмотрел рецепты",
+  suggestWorkoutTemplate: "Подобрал активность",
+  generateShoppingList: "Собрал покупки",
+  savePlan: "Сохранил план",
+};
 
 const formatDuration = (durationMs: number) => {
   if (durationMs < 1000) return `${durationMs} мс`;
@@ -179,17 +190,18 @@ export default function Home() {
                 <CardDescription>Текущее состояние локальной оркестрации.</CardDescription>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="grid grid-cols-3 gap-3">
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-4 lg:grid-cols-2 xl:grid-cols-4">
                   <Metric label="Состояние" value={status === "running" ? "В работе" : status === "result" ? "Готово" : "Ожидает"} />
                   <Metric label="Раунды" value={result ? String(result.rounds.length) : "-"} />
                   <Metric label="Score" value={result ? `${result.finalScore}/10` : "-"} />
+                  <Metric label="Tools" value={result ? String(result.toolCalls.length) : "-"} />
                 </div>
 
                 <Separator />
 
                 <div className="flex flex-wrap gap-2">
                   <Badge variant={verdictVariant}>{review ? verdictLabels[review.verdict] : "Нет результата"}</Badge>
-                  <Badge variant="outline">Profile + log context</Badge>
+                  <Badge variant="outline">Tool-driven context</Badge>
                   {result && <Badge variant="outline">{formatDuration(result.durationMs)}</Badge>}
                 </div>
               </CardContent>
@@ -273,6 +285,8 @@ export default function Home() {
                 <Separator />
                 <RoundHistory rounds={result.rounds} />
                 <Separator />
+                <ToolCallHistory toolCalls={result.toolCalls} />
+                <Separator />
                 <div className="space-y-2">
                   <h2 className="text-sm font-medium">Issues</h2>
                   {result.review.issues.length > 0 ? (
@@ -337,6 +351,35 @@ function RoundHistory({ rounds }: { rounds: Result["rounds"] }) {
           </li>
         ))}
       </ul>
+    </details>
+  );
+}
+
+function ToolCallHistory({ toolCalls }: { toolCalls: string[] }) {
+  return (
+    <details className="rounded-md border bg-background px-3 py-2" open>
+      <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium">
+        <Wrench className="size-4 text-primary" aria-hidden="true" />
+        Что сделал агент
+        <Badge variant="secondary" className="ml-auto">
+          {toolCalls.length}
+        </Badge>
+      </summary>
+      {toolCalls.length > 0 ? (
+        <ol className="mt-3 space-y-2">
+          {toolCalls.map((toolCall, index) => (
+            <li key={`${index}-${toolCall}`} className="flex items-center gap-2 rounded-md bg-muted px-3 py-2 text-sm">
+              <span className="text-xs tabular-nums text-muted-foreground">{index + 1}</span>
+              <span className="truncate">{toolLabels[toolCall] ?? toolCall}</span>
+              <Badge variant="outline" className="ml-auto shrink-0">
+                {toolCall}
+              </Badge>
+            </li>
+          ))}
+        </ol>
+      ) : (
+        <p className="mt-3 rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">Tools не вызывались.</p>
+      )}
     </details>
   );
 }

@@ -12,7 +12,7 @@ async function main() {
     return;
   }
   console.log(
-    `Approved. score=${result.finalScore}. rounds=${result.rounds.length}. durationMs=${result.durationMs}. План сохранен в data/output.md`,
+    `Approved. score=${result.finalScore}. rounds=${result.rounds.length}. tools=${result.toolCalls.join(",") || "-"}. durationMs=${result.durationMs}. План сохранен в data/output.md`,
   );
 }
 
