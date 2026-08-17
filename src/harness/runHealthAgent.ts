@@ -13,6 +13,7 @@ import { createSuggestWorkoutTemplateTool } from "../skills/workouts";
 import { loadActivePrompts, type ActivePromptVersions } from "./promptVersions";
 import { appendRound, type RoundState } from "./rounds";
 import { calculateFinalScore, calculateImproved } from "./score";
+import { traceRun } from "./traceRun";
 import { validateReviewWithRetry, type Review } from "./validateReview";
 
 export type HealthAgentResult = {
@@ -97,6 +98,21 @@ function buildResult(
   };
 }
 
+async function buildAndTraceResult(
+  task: string,
+  model: string,
+  plan: string | null,
+  review: Review,
+  rounds: RoundState[],
+  promptVersions: ActivePromptVersions,
+  startTime: number,
+  toolCalls: string[],
+) {
+  const result = buildResult(plan, review, rounds, promptVersions, startTime, toolCalls);
+  await traceRun(task, model, result);
+  return result;
+}
+
 async function saveApprovedPlanWithTool(runner: Runner, instructions: string, plan: string, toolCalls: string[]) {
   const beforeCount = toolCalls.length;
   const savePlanTool = createSavePlanTool((name) => toolCalls.push(name));
@@ -163,11 +179,11 @@ export async function runHealthAgent(task: string, maxRounds = 3): Promise<Healt
     console.log(`round=${round} verdict=${review.verdict} score=${review.score} issues=${JSON.stringify(review.issues)}`);
 
     if (review.verdict === "needs_human_professional") {
-      return buildResult(null, review, rounds, versions, startTime, toolCalls);
+      return buildAndTraceResult(cleanTask, model, null, review, rounds, versions, startTime, toolCalls);
     }
     if (review.verdict === "approve") {
       await saveApprovedPlanWithTool(runner, prompts.coach, plan, toolCalls);
-      return buildResult(plan, review, rounds, versions, startTime, toolCalls);
+      return buildAndTraceResult(cleanTask, model, plan, review, rounds, versions, startTime, toolCalls);
     }
 
     plan = await runText(
@@ -176,6 +192,10 @@ export async function runHealthAgent(task: string, maxRounds = 3): Promise<Healt
       `Задача пользователя: ${cleanTask}\n\nПредыдущий план:\n${plan}\n\nЗамечания reviewer-а:\n${review.issues.map((issue) => `- ${issue}`).join("\n")}\n\nИсправь план с учетом замечаний. Если нужны профиль, дневник или рецепты, используй tools. Не добавляй медицинские советы.`,
       toolCalls,
     );
+  }
+  const lastRound = rounds.at(-1);
+  if (lastRound) {
+    await buildAndTraceResult(cleanTask, model, null, lastRound.review, rounds, versions, startTime, toolCalls);
   }
   throw new Error(`Не удалось получить approve за ${maxRounds} раунда ревизии`);
 }

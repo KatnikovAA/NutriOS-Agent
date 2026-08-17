@@ -4,7 +4,9 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "cli": "tsx index.ts"
+    "cli": "tsx index.ts",
+    "replay": "tsx scripts/replay.ts",
+    "eval": "tsx scripts/eval.ts"
   },
   "dependencies": {
     "@radix-ui/react-slot": "^1.2.4",

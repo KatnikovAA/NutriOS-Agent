@@ -6,3 +6,6 @@ node-install-*.log
 patch-os-userinfo.cjs
 .next/
 data/*.md
+runs/*
+!runs/
+!runs/run-example.json

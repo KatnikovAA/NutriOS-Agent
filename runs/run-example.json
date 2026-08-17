@@ -1,0 +1,29 @@
+{
+  "runId": "run-2026-08-17T15-00-00-000Z",
+  "task": "составь план питания на завтра",
+  "promptVersions": {
+    "coach": "v2",
+    "reviewer": "v1"
+  },
+  "model": "deepseek-v4-flash",
+  "rounds": [
+    {
+      "round": 1,
+      "planExcerpt": "Пример короткого фрагмента плана, который попадает в trace только первыми 500 символами.",
+      "review": {
+        "verdict": "approve",
+        "score": 8,
+        "issues": []
+      }
+    }
+  ],
+  "toolCalls": [
+    "getProfile",
+    "getRecentLog",
+    "savePlan"
+  ],
+  "finalScore": 8,
+  "verdict": "approve",
+  "durationMs": 1200,
+  "createdAt": "2026-08-17T15:00:00.000Z"
+}
