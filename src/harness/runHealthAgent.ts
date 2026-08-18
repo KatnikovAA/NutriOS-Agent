@@ -1,15 +1,12 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { Agent, Runner } from "@openai/agents-core";
+import { Agent, type MCPServer, Runner } from "@openai/agents-core";
 import { OpenAIProvider } from "@openai/agents-openai";
 import { createHealthCoachAgent } from "../agents/healthCoach";
 import { createSafetyReviewerAgent } from "../agents/safetyReviewer";
-import { createGetRecentLogTool } from "../skills/logs";
-import { createSavePlanTool } from "../skills/plans";
-import { createGetProfileTool } from "../skills/profile";
-import { createListFavoriteRecipesTool } from "../skills/recipes";
 import { createGenerateShoppingListTool } from "../skills/shopping";
 import { createSuggestWorkoutTemplateTool } from "../skills/workouts";
+import { connectMarkdownHealthMcpServer } from "./markdownMcp";
 import { loadActivePrompts, type ActivePromptVersions } from "./promptVersions";
 import { appendRound, type RoundState } from "./rounds";
 import { calculateFinalScore, calculateImproved } from "./score";
@@ -56,15 +53,22 @@ async function runText(runner: Runner, agent: Agent, input: string, toolCalls: s
   const beforeCount = toolCalls.length;
   const result = await runner.run(agent, input);
   const itemCalls = extractToolCallNames(result);
-  if (toolCalls.length === beforeCount && itemCalls.length > 0) {
-    toolCalls.push(...itemCalls);
+  const callbackCalls = toolCalls.slice(beforeCount);
+  for (const itemCall of itemCalls) {
+    const matchingCallbackIndex = callbackCalls.indexOf(itemCall);
+    if (matchingCallbackIndex >= 0) {
+      callbackCalls.splice(matchingCallbackIndex, 1);
+    } else {
+      toolCalls.push(itemCall);
+    }
   }
   return String(result.finalOutput ?? "").trim();
 }
 
 function forceMedicalBoundary(task: string, review: Review): Review {
   const boundaryText = `${task}\n${review.issues.join("\n")}`;
-  const medicalPattern = /лекарств|таблет|препарат|дозиров|давлен|лечени|диагноз|анализ|боль|симптом/i;
+  const medicalPattern =
+    /лекарств|таблет|препарат|дозиров|давлен|лечени|диагноз|анализ|(?<![а-яё])боль(?![а-яё])|симптом/i;
   const supplementPattern = /добавк|витамин|бад|supplement|омега|магни/i;
   const supplementRiskPattern = /купить|покупк|принимать|принимай|дозиров|анализ|дефицит|назнач|курс/i;
   const needsBoundary =
@@ -113,24 +117,30 @@ async function buildAndTraceResult(
   return result;
 }
 
-async function saveApprovedPlanWithTool(runner: Runner, instructions: string, plan: string, toolCalls: string[]) {
+async function saveApprovedPlanWithMcp(
+  runner: Runner,
+  instructions: string,
+  plan: string,
+  mcpServers: MCPServer[],
+  toolCalls: string[],
+) {
   const beforeCount = toolCalls.length;
-  const savePlanTool = createSavePlanTool((name) => toolCalls.push(name));
-  const savingAgent = createHealthCoachAgent(instructions, [savePlanTool], {
-    toolUseBehavior: { stopAtToolNames: ["savePlan"] },
+  const savingAgent = createHealthCoachAgent(instructions, [], {
+    mcpServers,
+    toolUseBehavior: { stopAtToolNames: ["save_health_plan"] },
   });
 
-  // Harness controls persistence: drafts cannot access savePlan, and this call happens only after approve.
-  // DeepSeek thinking-mode rejects forced toolChoice, so we expose only savePlan and verify the call happened.
+  // Harness controls persistence: this save path runs only after approve.
+  // DeepSeek thinking-mode rejects forced toolChoice, so we verify that the MCP tool was called.
   await runText(
     runner,
     savingAgent,
-    `Safety reviewer вернул verdict=approve. Вызови tool savePlan и сохрани этот финальный план без изменений:\n\n${plan}`,
+    `Safety reviewer вернул verdict=approve. Вызови tool save_health_plan и сохрани этот финальный план без изменений:\n\n${plan}`,
     toolCalls,
   );
 
-  if (!toolCalls.slice(beforeCount).includes("savePlan")) {
-    throw new Error("Финальный план одобрен, но savePlan не был вызван");
+  if (!toolCalls.slice(beforeCount).includes("save_health_plan")) {
+    throw new Error("Финальный план одобрен, но save_health_plan не был вызван");
   }
 }
 
@@ -152,50 +162,56 @@ export async function runHealthAgent(task: string, maxRounds = 3): Promise<Healt
   const { prompts, versions } = await loadActivePrompts();
   const toolCalls: string[] = [];
   const recordToolCall = (name: string) => toolCalls.push(name);
-  const healthCoachAgent = createHealthCoachAgent(prompts.coach, [
-    createGetProfileTool(recordToolCall),
-    createGetRecentLogTool(recordToolCall),
-    createListFavoriteRecipesTool(recordToolCall),
-    createSuggestWorkoutTemplateTool(recordToolCall),
-    createGenerateShoppingListTool(recordToolCall),
-  ]);
-  const safetyReviewerAgent = createSafetyReviewerAgent(prompts.reviewer);
-  let plan = await runText(
-    runner,
-    healthCoachAgent,
-    `Задача пользователя: ${cleanTask}\n\nСоставь полезный ответ. Если для качества нужны профиль, дневник, рецепты, тренировка или список покупок, сам вызови доступные tools.`,
-    toolCalls,
-  );
-  let rounds: RoundState[] = [];
+  const markdownMcpServer = await connectMarkdownHealthMcpServer();
 
-  for (let round = 1; round <= maxRounds; round++) {
-    const review = forceMedicalBoundary(
-      cleanTask,
-      await validateReviewWithRetry(`План для проверки:\n${plan}`, (prompt) =>
-        runText(runner, safetyReviewerAgent, prompt),
-      ),
+  try {
+    const healthCoachAgent = createHealthCoachAgent(
+      prompts.coach,
+      [createSuggestWorkoutTemplateTool(recordToolCall), createGenerateShoppingListTool(recordToolCall)],
+      { mcpServers: [markdownMcpServer] },
     );
-    rounds = appendRound(rounds, { round, plan, review });
-    console.log(`round=${round} verdict=${review.verdict} score=${review.score} issues=${JSON.stringify(review.issues)}`);
-
-    if (review.verdict === "needs_human_professional") {
-      return buildAndTraceResult(cleanTask, model, null, review, rounds, versions, startTime, toolCalls);
-    }
-    if (review.verdict === "approve") {
-      await saveApprovedPlanWithTool(runner, prompts.coach, plan, toolCalls);
-      return buildAndTraceResult(cleanTask, model, plan, review, rounds, versions, startTime, toolCalls);
-    }
-
-    plan = await runText(
+    const safetyReviewerAgent = createSafetyReviewerAgent(prompts.reviewer);
+    let plan = await runText(
       runner,
       healthCoachAgent,
-      `Задача пользователя: ${cleanTask}\n\nПредыдущий план:\n${plan}\n\nЗамечания reviewer-а:\n${review.issues.map((issue) => `- ${issue}`).join("\n")}\n\nИсправь план с учетом замечаний. Если нужны профиль, дневник или рецепты, используй tools. Не добавляй медицинские советы.`,
+      `Задача пользователя: ${cleanTask}\n\nСоставь полезный ответ. Если для качества нужны профиль, дневник, рецепты, тренировка или список покупок, сам вызови доступные tools.`,
       toolCalls,
     );
+    let rounds: RoundState[] = [];
+
+    for (let round = 1; round <= maxRounds; round++) {
+      const review = forceMedicalBoundary(
+        cleanTask,
+        await validateReviewWithRetry(`План для проверки:\n${plan}`, (prompt) =>
+          runText(runner, safetyReviewerAgent, prompt),
+        ),
+      );
+      rounds = appendRound(rounds, { round, plan, review });
+      console.log(
+        `round=${round} verdict=${review.verdict} score=${review.score} issues=${JSON.stringify(review.issues)}`,
+      );
+
+      if (review.verdict === "needs_human_professional") {
+        return buildAndTraceResult(cleanTask, model, null, review, rounds, versions, startTime, toolCalls);
+      }
+      if (review.verdict === "approve") {
+        await saveApprovedPlanWithMcp(runner, prompts.coach, plan, [markdownMcpServer], toolCalls);
+        return buildAndTraceResult(cleanTask, model, plan, review, rounds, versions, startTime, toolCalls);
+      }
+
+      plan = await runText(
+        runner,
+        healthCoachAgent,
+        `Задача пользователя: ${cleanTask}\n\nПредыдущий план:\n${plan}\n\nЗамечания reviewer-а:\n${review.issues.map((issue) => `- ${issue}`).join("\n")}\n\nИсправь план с учетом замечаний. Если нужны профиль, дневник или рецепты, используй tools. Не добавляй медицинские советы.`,
+        toolCalls,
+      );
+    }
+    const lastRound = rounds.at(-1);
+    if (lastRound) {
+      await buildAndTraceResult(cleanTask, model, null, lastRound.review, rounds, versions, startTime, toolCalls);
+    }
+    throw new Error(`Не удалось получить approve за ${maxRounds} раунда ревизии`);
+  } finally {
+    await markdownMcpServer.close();
   }
-  const lastRound = rounds.at(-1);
-  if (lastRound) {
-    await buildAndTraceResult(cleanTask, model, null, lastRound.review, rounds, versions, startTime, toolCalls);
-  }
-  throw new Error(`Не удалось получить approve за ${maxRounds} раунда ревизии`);
 }

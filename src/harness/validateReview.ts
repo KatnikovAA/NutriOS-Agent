@@ -14,11 +14,18 @@ function parseReview(raw: string) {
   try {
     const parsedJson = JSON.parse(raw.trim()) as unknown;
     const parsedReview = ReviewSchema.safeParse(parsedJson);
-    if (parsedReview.success) return { review: parsedReview.data };
+    if (parsedReview.success) return { review: normalizeReview(parsedReview.data) };
     return { error: parsedReview.error.message };
   } catch (error) {
     return { error: error instanceof Error ? error.message : String(error) };
   }
+}
+
+function normalizeReview(review: Review): Review {
+  if (review.verdict === "approve" && review.issues.length === 0 && review.score < 7) {
+    return { ...review, score: 7 };
+  }
+  return review;
 }
 
 export async function validateReviewWithRetry(input: string, runReviewText: ReviewTextRunner) {

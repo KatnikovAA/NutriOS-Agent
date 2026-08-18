@@ -5,10 +5,12 @@
     "build": "next build",
     "start": "next start",
     "cli": "tsx index.ts",
+    "mcp:inspect": "tsx scripts/inspectMcp.ts",
     "replay": "tsx scripts/replay.ts",
     "eval": "tsx scripts/eval.ts"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@radix-ui/react-slot": "^1.2.4",
     "@openai/agents": "0.16.0",
     "@openai/agents-core": "0.16.0",
