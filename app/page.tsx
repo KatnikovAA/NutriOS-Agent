@@ -8,10 +8,12 @@ import {
   ClipboardList,
   History,
   Loader2,
+  ExternalLink,
   ShieldCheck,
   Stethoscope,
   Timer,
   TrendingUp,
+  UploadCloud,
   Wrench,
 } from "lucide-react";
 
@@ -35,6 +37,14 @@ type Result = {
   toolCalls: string[];
 };
 
+type NotionSaveResult = {
+  ok: boolean;
+  id: string;
+  url: string;
+  title: string;
+  toolCalls: string[];
+};
+
 const verdictLabels: Record<ReviewVerdict, string> = {
   approve: "Одобрено",
   revise: "Доработано",
@@ -43,18 +53,31 @@ const verdictLabels: Record<ReviewVerdict, string> = {
 
 const exampleTasks = [
   "план питания на завтра с учетом моего лога",
+  "спланируй тренировку на завтра с учётом погоды",
+  "сохрани мой план ещё и в отдельный файл plans/2026-08-18.md",
   "составь список покупок к плану",
   "сделай мягкий план восстановления после позднего ужина",
 ];
 
 const toolLabels: Record<string, string> = {
-  getProfile: "Прочитал профиль",
-  getRecentLog: "Проверил дневник",
-  listFavoriteRecipes: "Посмотрел рецепты",
+  read_profile: "Прочитал профиль",
+  read_recent_logs: "Проверил дневник",
+  list_recipes: "Посмотрел рецепты",
   suggestWorkoutTemplate: "Подобрал активность",
   generateShoppingList: "Собрал покупки",
-  savePlan: "Сохранил план",
+  save_health_plan: "Сохранил план",
+  openmeteo_search_locations: "Нашел город для прогноза",
+  openmeteo_get_forecast: "Проверил прогноз",
+  write_file: "Сохранил отдельный файл",
+  create_directory: "Подготовил папку",
+  "API-post-page": "Создал страницу Notion",
 };
+
+function parseToolCall(toolCall: string) {
+  const match = toolCall.match(/^\[([^\]]+)\]\s*(.+)$/);
+  if (!match) return { source: "local", name: toolCall };
+  return { source: match[1], name: match[2] };
+}
 
 const formatDuration = (durationMs: number) => {
   if (durationMs < 1000) return `${durationMs} мс`;
@@ -66,6 +89,9 @@ export default function Home() {
   const [status, setStatus] = useState<"idle" | "running" | "result">("idle");
   const [result, setResult] = useState<Result | null>(null);
   const [error, setError] = useState("");
+  const [notionStatus, setNotionStatus] = useState<"idle" | "saving" | "saved" | "error">("idle");
+  const [notionUrl, setNotionUrl] = useState("");
+  const [notionError, setNotionError] = useState("");
 
   const canSubmit = status !== "running" && task.trim().length > 0;
   const review = result?.review;
@@ -80,6 +106,9 @@ export default function Home() {
     setStatus("running");
     setError("");
     setResult(null);
+    setNotionStatus("idle");
+    setNotionUrl("");
+    setNotionError("");
     try {
       const response = await fetch("/api/agent/run", {
         method: "POST",
@@ -93,6 +122,38 @@ export default function Home() {
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Не удалось запустить агента");
       setStatus("idle");
+    }
+  }
+
+  async function saveToNotion() {
+    if (!result?.plan) return;
+    setNotionStatus("saving");
+    setNotionError("");
+    setNotionUrl("");
+    try {
+      const response = await fetch("/api/notion/save", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          markdown: result.plan,
+          title: `NutriOS plan ${new Date().toISOString().slice(0, 10)}`,
+        }),
+      });
+      const data = (await response.json()) as Partial<NotionSaveResult> & { error?: string };
+      if (!response.ok) throw new Error(data.error ?? "Не удалось сохранить в Notion");
+      setNotionUrl(data.url ?? "");
+      setResult((current) =>
+        current
+          ? {
+              ...current,
+              toolCalls: [...current.toolCalls, ...(data.toolCalls ?? [])],
+            }
+          : current,
+      );
+      setNotionStatus("saved");
+    } catch (reason) {
+      setNotionError(reason instanceof Error ? reason.message : "Не удалось сохранить в Notion");
+      setNotionStatus("error");
     }
   }
 
@@ -253,7 +314,51 @@ export default function Home() {
                   </CardTitle>
                   <CardDescription>Одобренный результат сохранен в локальный output-файл harness.</CardDescription>
                 </CardHeader>
-                <CardContent>
+                <CardContent className="space-y-4">
+                  <div className="flex flex-col gap-3 rounded-md border bg-background px-3 py-3 sm:flex-row sm:items-center sm:justify-between">
+                    <div className="space-y-1">
+                      <div className="text-sm font-medium">Экспорт в Notion</div>
+                      <div className="text-sm text-muted-foreground">
+                        Сохранит этот финальный план дочерней страницей внутри Wellness.
+                      </div>
+                      {notionStatus === "error" && <div className="text-sm text-destructive">{notionError}</div>}
+                      {notionStatus === "saved" && notionUrl && (
+                        <a
+                          href={notionUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="inline-flex items-center gap-1 text-sm font-medium text-primary underline-offset-4 hover:underline"
+                        >
+                          Открыть в Notion
+                          <ExternalLink className="size-3" aria-hidden="true" />
+                        </a>
+                      )}
+                    </div>
+                    <Button
+                      type="button"
+                      variant={notionStatus === "saved" ? "secondary" : "default"}
+                      disabled={notionStatus === "saving" || notionStatus === "saved"}
+                      onClick={saveToNotion}
+                      className="shrink-0"
+                    >
+                      {notionStatus === "saving" ? (
+                        <>
+                          <Loader2 className="animate-spin" aria-hidden="true" />
+                          Сохраняю
+                        </>
+                      ) : notionStatus === "saved" ? (
+                        <>
+                          <CheckCircle2 aria-hidden="true" />
+                          Сохранено
+                        </>
+                      ) : (
+                        <>
+                          <UploadCloud aria-hidden="true" />
+                          Сохранить в Notion
+                        </>
+                      )}
+                    </Button>
+                  </div>
                   <pre className="max-h-[560px] overflow-auto whitespace-pre-wrap rounded-md border bg-secondary/40 p-4 text-sm leading-6 text-foreground">
                     {result.plan}
                   </pre>
@@ -367,15 +472,21 @@ function ToolCallHistory({ toolCalls }: { toolCalls: string[] }) {
       </summary>
       {toolCalls.length > 0 ? (
         <ol className="mt-3 space-y-2">
-          {toolCalls.map((toolCall, index) => (
-            <li key={`${index}-${toolCall}`} className="flex items-center gap-2 rounded-md bg-muted px-3 py-2 text-sm">
-              <span className="text-xs tabular-nums text-muted-foreground">{index + 1}</span>
-              <span className="truncate">{toolLabels[toolCall] ?? toolCall}</span>
-              <Badge variant="outline" className="ml-auto shrink-0">
-                {toolCall}
-              </Badge>
-            </li>
-          ))}
+          {toolCalls.map((toolCall, index) => {
+            const parsed = parseToolCall(toolCall);
+            return (
+              <li key={`${index}-${toolCall}`} className="flex items-center gap-2 rounded-md bg-muted px-3 py-2 text-sm">
+                <span className="text-xs tabular-nums text-muted-foreground">{index + 1}</span>
+                <span className="truncate">{toolLabels[parsed.name] ?? parsed.name}</span>
+                <Badge variant="secondary" className="ml-auto shrink-0">
+                  {parsed.source}
+                </Badge>
+                <Badge variant="outline" className="max-w-[45%] shrink-0 truncate">
+                  {parsed.name}
+                </Badge>
+              </li>
+            );
+          })}
         </ol>
       ) : (
         <p className="mt-3 rounded-md bg-muted px-3 py-2 text-sm text-muted-foreground">Tools не вызывались.</p>

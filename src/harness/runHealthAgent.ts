@@ -1,12 +1,11 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
 import { Agent, type MCPServer, Runner } from "@openai/agents-core";
 import { OpenAIProvider } from "@openai/agents-openai";
 import { createHealthCoachAgent } from "../agents/healthCoach";
 import { createSafetyReviewerAgent } from "../agents/safetyReviewer";
 import { createGenerateShoppingListTool } from "../skills/shopping";
 import { createSuggestWorkoutTemplateTool } from "../skills/workouts";
-import { connectMarkdownHealthMcpServer } from "./markdownMcp";
+import { loadEnv } from "./env";
+import { connectConfiguredMcpServers, extractRawToolName, formatToolCallName, type ToolSource } from "./mcpServers";
 import { loadActivePrompts, type ActivePromptVersions } from "./promptVersions";
 import { appendRound, type RoundState } from "./rounds";
 import { calculateFinalScore, calculateImproved } from "./score";
@@ -24,17 +23,6 @@ export type HealthAgentResult = {
   toolCalls: string[];
 };
 
-function loadEnv() {
-  const envPath = join(process.cwd(), ".env");
-  if (!existsSync(envPath)) return;
-  const lines = readFileSync(envPath, "utf8").split(/\r?\n/);
-  for (const line of lines) {
-    const match = line.match(/^\s*([\w.-]+)\s*=\s*(.*)\s*$/);
-    if (!match || match[1].startsWith("#")) continue;
-    process.env[match[1]] ??= match[2].replace(/^["']|["']$/g, "");
-  }
-}
-
 type RunWithItems = {
   finalOutput?: unknown;
   newItems?: { rawItem?: { type?: string; name?: string } }[];
@@ -49,17 +37,31 @@ function extractToolCallNames(result: RunWithItems) {
   );
 }
 
-async function runText(runner: Runner, agent: Agent, input: string, toolCalls: string[] = []) {
+function recordToolCall(toolCalls: string[], toolSources: Map<string, ToolSource>, name: string) {
+  toolCalls.push(formatToolCallName(name, toolSources));
+}
+
+function hasToolCall(toolCalls: string[], name: string) {
+  return toolCalls.some((toolCall) => extractRawToolName(toolCall) === name);
+}
+
+async function runText(
+  runner: Runner,
+  agent: Agent,
+  input: string,
+  toolCalls: string[] = [],
+  toolSources = new Map<string, ToolSource>(),
+) {
   const beforeCount = toolCalls.length;
   const result = await runner.run(agent, input);
   const itemCalls = extractToolCallNames(result);
-  const callbackCalls = toolCalls.slice(beforeCount);
+  const callbackCalls = toolCalls.slice(beforeCount).map(extractRawToolName);
   for (const itemCall of itemCalls) {
     const matchingCallbackIndex = callbackCalls.indexOf(itemCall);
     if (matchingCallbackIndex >= 0) {
       callbackCalls.splice(matchingCallbackIndex, 1);
     } else {
-      toolCalls.push(itemCall);
+      recordToolCall(toolCalls, toolSources, itemCall);
     }
   }
   return String(result.finalOutput ?? "").trim();
@@ -123,6 +125,7 @@ async function saveApprovedPlanWithMcp(
   plan: string,
   mcpServers: MCPServer[],
   toolCalls: string[],
+  toolSources: Map<string, ToolSource>,
 ) {
   const beforeCount = toolCalls.length;
   const savingAgent = createHealthCoachAgent(instructions, [], {
@@ -137,9 +140,10 @@ async function saveApprovedPlanWithMcp(
     savingAgent,
     `Safety reviewer вернул verdict=approve. Вызови tool save_health_plan и сохрани этот финальный план без изменений:\n\n${plan}`,
     toolCalls,
+    toolSources,
   );
 
-  if (!toolCalls.slice(beforeCount).includes("save_health_plan")) {
+  if (!hasToolCall(toolCalls.slice(beforeCount), "save_health_plan")) {
     throw new Error("Финальный план одобрен, но save_health_plan не был вызван");
   }
 }
@@ -161,14 +165,14 @@ export async function runHealthAgent(task: string, maxRounds = 3): Promise<Healt
   const runner = new Runner({ model, modelProvider, tracingDisabled: true });
   const { prompts, versions } = await loadActivePrompts();
   const toolCalls: string[] = [];
-  const recordToolCall = (name: string) => toolCalls.push(name);
-  const markdownMcpServer = await connectMarkdownHealthMcpServer();
+  const mcp = await connectConfiguredMcpServers();
+  const recordLocalToolCall = (name: string) => recordToolCall(toolCalls, mcp.toolSources, name);
 
   try {
     const healthCoachAgent = createHealthCoachAgent(
       prompts.coach,
-      [createSuggestWorkoutTemplateTool(recordToolCall), createGenerateShoppingListTool(recordToolCall)],
-      { mcpServers: [markdownMcpServer] },
+      [createSuggestWorkoutTemplateTool(recordLocalToolCall), createGenerateShoppingListTool(recordLocalToolCall)],
+      { mcpServers: mcp.servers },
     );
     const safetyReviewerAgent = createSafetyReviewerAgent(prompts.reviewer);
     let plan = await runText(
@@ -176,6 +180,7 @@ export async function runHealthAgent(task: string, maxRounds = 3): Promise<Healt
       healthCoachAgent,
       `Задача пользователя: ${cleanTask}\n\nСоставь полезный ответ. Если для качества нужны профиль, дневник, рецепты, тренировка или список покупок, сам вызови доступные tools.`,
       toolCalls,
+      mcp.toolSources,
     );
     let rounds: RoundState[] = [];
 
@@ -183,7 +188,7 @@ export async function runHealthAgent(task: string, maxRounds = 3): Promise<Healt
       const review = forceMedicalBoundary(
         cleanTask,
         await validateReviewWithRetry(`План для проверки:\n${plan}`, (prompt) =>
-          runText(runner, safetyReviewerAgent, prompt),
+          runText(runner, safetyReviewerAgent, prompt, toolCalls, mcp.toolSources),
         ),
       );
       rounds = appendRound(rounds, { round, plan, review });
@@ -195,7 +200,7 @@ export async function runHealthAgent(task: string, maxRounds = 3): Promise<Healt
         return buildAndTraceResult(cleanTask, model, null, review, rounds, versions, startTime, toolCalls);
       }
       if (review.verdict === "approve") {
-        await saveApprovedPlanWithMcp(runner, prompts.coach, plan, [markdownMcpServer], toolCalls);
+        await saveApprovedPlanWithMcp(runner, prompts.coach, plan, mcp.servers, toolCalls, mcp.toolSources);
         return buildAndTraceResult(cleanTask, model, plan, review, rounds, versions, startTime, toolCalls);
       }
 
@@ -204,6 +209,7 @@ export async function runHealthAgent(task: string, maxRounds = 3): Promise<Healt
         healthCoachAgent,
         `Задача пользователя: ${cleanTask}\n\nПредыдущий план:\n${plan}\n\nЗамечания reviewer-а:\n${review.issues.map((issue) => `- ${issue}`).join("\n")}\n\nИсправь план с учетом замечаний. Если нужны профиль, дневник или рецепты, используй tools. Не добавляй медицинские советы.`,
         toolCalls,
+        mcp.toolSources,
       );
     }
     const lastRound = rounds.at(-1);
@@ -212,6 +218,6 @@ export async function runHealthAgent(task: string, maxRounds = 3): Promise<Healt
     }
     throw new Error(`Не удалось получить approve за ${maxRounds} раунда ревизии`);
   } finally {
-    await markdownMcpServer.close();
+    await mcp.close();
   }
 }

@@ -1,22 +1,32 @@
-import { connectMarkdownHealthMcpServer } from "../src/harness/markdownMcp";
+import { loadEnv } from "../src/harness/env";
+import { connectConfiguredMcpServers } from "../src/harness/mcpServers";
 
 async function main() {
-  const server = await connectMarkdownHealthMcpServer();
+  loadEnv();
+  const mcp = await connectConfiguredMcpServers();
   try {
-    const tools = await server.listTools();
-    const resources = await server.listResources();
-
     console.log("MCP tools:");
-    for (const tool of tools) {
-      console.log(`- ${tool.name}`);
+    for (const [toolName, source] of [...mcp.toolSources.entries()].sort(([left], [right]) =>
+      left.localeCompare(right),
+    )) {
+      console.log(`- [${source}] ${toolName}`);
     }
 
     console.log("\nMCP resources:");
-    for (const resource of resources.resources) {
-      console.log(`- ${resource.uri}`);
+    for (const server of mcp.servers) {
+      let resources;
+      try {
+        resources = await server.listResources();
+      } catch (error) {
+        if (error instanceof Error && /Method not found/i.test(error.message)) continue;
+        throw error;
+      }
+      for (const resource of resources.resources) {
+        console.log(`- ${resource.uri}`);
+      }
     }
   } finally {
-    await server.close();
+    await mcp.close();
   }
 }
 

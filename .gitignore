@@ -9,3 +9,5 @@ data/*.md
 runs/*
 !runs/
 !runs/run-example.json
+plans/*.md
+!plans/.gitkeep

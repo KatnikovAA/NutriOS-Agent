@@ -16,10 +16,20 @@ npm run dev
 - `data/log.md` — дневник последних дней;
 - `data/recipes.md` — локальные любимые рецепты;
 - `data/output.md` — последний одобренный план.
+- `plans/` — дополнительные markdown-файлы планов, которые агент может создавать через filesystem MCP по явной просьбе пользователя.
 
-## MCP-сервер markdown-данных
+## MCP-серверы
 
-Данные профиля, дневника, рецептов и сохранение финального плана доступны агенту через собственный stdio MCP-сервер `src/mcp/markdownHealthServer.ts`. Сервер работает только с локальными markdown-файлами из `data/` и не использует сетевые транспорты или внешние MCP-серверы.
+MCP-серверы описаны в `src/mcp/servers.config.ts`. Harness читает этот конфиг, запускает все активные stdio-серверы отдельными процессами, отдаёт их tools агенту единым списком и закрывает процессы в `finally`. Добавление нового MCP-сервера = новая запись в конфиге, без правок orchestration-кода.
+
+| Сервер | Пакет / команда | Что даёт | Авторизация |
+| --- | --- | --- | --- |
+| `markdown-health` | `npx tsx src/mcp/markdownHealthServer.ts` | Профиль, дневник, рецепты, сохранение финального плана в `data/output.md` | Не нужна |
+| `filesystem` | `@modelcontextprotocol/server-filesystem` | Чтение/запись файлов только в `data/` и `plans/` | Не нужна |
+| `weather` | `@cyanheads/open-meteo-mcp-server@0.3.4` | Геокодинг и прогноз Open-Meteo: `openmeteo_search_locations`, `openmeteo_get_forecast` и другие weather tools | Не нужна |
+| `notion` | `@notionhq/notion-mcp-server` | Создание/обновление страниц через Notion API | `NOTION_TOKEN`; без токена сервер пропускается |
+
+`notion` в конфиге стоит `enabled: false`, но автоматически включается, если в `.env` или окружении есть `NOTION_TOKEN`. Это internal integration token, без OAuth-флоу. В Notion этой integration нужно дать доступ только к странице или базе `Wellness`.
 
 Проверить список MCP tools и resources можно командой:
 
@@ -27,26 +37,50 @@ npm run dev
 npm run mcp:inspect
 ```
 
-Ожидаемые tools:
-
-- `read_profile`
-- `read_recent_logs`
-- `append_daily_log`
-- `save_health_plan`
-- `list_recipes`
-
-Ожидаемые resources:
+Команда запускает активные серверы из конфига и печатает tools с источниками, например `[markdown-health] read_profile`, `[filesystem] write_file`, `[weather] openmeteo_get_forecast`. Для собственного markdown-сервера также видны resources:
 
 - `profile://me`
 - `logs://recent`
 - `recipes://all`
 - `plans://latest`
 
+### Демо MCP
+
+```bash
+npm run cli -- "спланируй тренировку на завтра с учётом погоды"
+```
+
+Ожидаемо: агент читает профиль, берёт город из `data/profile.md`, вызывает weather MCP и ссылается на прогноз. Если погода плохая, переносит активность в зал или домой.
+
+```bash
+npm run cli -- "сохрани мой план ещё и в отдельный файл plans/2026-08-18.md"
+```
+
+Ожидаемо: после safety approve финальный план сохраняется в `data/output.md` через `markdown-health`, а отдельный файл создаётся через `filesystem` MCP внутри `plans/`.
+
+```bash
+npm run cli -- "сохрани план страницей в мой Notion"
+```
+
+Ожидаемо при наличии `NOTION_TOKEN`: агент использует Notion MCP tools и создаёт страницу в доступной integration области `Wellness`. Без токена Notion-сервер не поднимается и запуск не ломается.
+
+В UI после approved результата доступна кнопка `Сохранить в Notion`. Она не запускает модель повторно: frontend отправляет готовый markdown-план в `/api/notion/save`, а route сохраняет его дочерней страницей внутри `Wellness` через Notion MCP.
+
+### Guardrails
+
+Принцип: prompt — просьба, config — стена. Промпт объясняет агенту правильное поведение, но настоящие границы доступа задаются конфигом и правами сервера.
+
+- `filesystem`: на уровне запуска сервера разрешены только `data/` и `plans/`; в prompt дополнительно сказано писать планы только в `plans/`.
+- `notion`: техническая граница задаётся правами Notion integration; ей выдаётся доступ только к странице или базе `Wellness`, а prompt просит писать только туда.
+- `weather`: read-only по природе и не требует ключа, поэтому отдельных write-ограничений не нужно.
+
 ## До MCP / После MCP
 
-До MCP каждая интеграция с локальными данными подключалась к Health Coach Agent вручную как отдельная function tool: профиль, дневник, рецепты и сохранение плана жили рядом с агентом и требовали индивидуальной обвязки.
+До MCP каждая интеграция подключалась к Health Coach Agent руками как отдельная function tool: профиль, дневник, рецепты и сохранение плана жили рядом с агентом и требовали индивидуальной обвязки.
 
-После MCP данные вынесены за стандартную границу: markdown-сервер сам публикует tools и resources, а harness только запускает stdio-процесс, подключает его к агенту и закрывает после запуска. Для агента MCP tools выглядят как обычные инструменты и попадают в тот же `toolCalls` trace. Локальные tools `generateShoppingList` и `suggestWorkoutTemplate` оставлены напрямую, чтобы было видно различие между локальным tool и MCP tool.
+После MCP интеграции стали конфигом: markdown, filesystem, weather и Notion публикуют tools по стандартному протоколу, а harness только запускает stdio-процессы из `servers.config.ts`. Для агента MCP tools выглядят как обычные инструменты и попадают в тот же `toolCalls` trace. Локальные tools `generateShoppingList` и `suggestWorkoutTemplate` оставлены напрямую, чтобы было видно различие между локальным tool и MCP tool.
+
+Полезные MCP, которые сюда не подключены намеренно: Google Calendar для расписания тренировок (требует OAuth, вынесен за скобки), database/Postgres MCP для долговременной истории вместо markdown, web search MCP для актуальных источников. Для этого проекта сейчас достаточно локального stdio и token-only Notion.
 
 ## CLI
 
@@ -60,7 +94,7 @@ npm run cli -- "составь план питания на завтра"
 
 ## Как дебажить агента
 
-Каждый запуск UI или CLI сохраняет локальный trace в `runs/run-<timestamp>.json`. В trace видны задача, версии промптов, модель, краткие фрагменты планов по раундам, review, tool calls, score, verdict и duration. MCP tools логируются в том же поле `toolCalls`, например `read_profile`, `read_recent_logs`, `list_recipes` и `save_health_plan`.
+Каждый запуск UI или CLI сохраняет локальный trace в `runs/run-<timestamp>.json`. В trace видны задача, версии промптов, модель, краткие фрагменты планов по раундам, review, tool calls, score, verdict и duration. Tools логируются в одном поле `toolCalls` с источником: `[markdown-health] read_profile`, `[weather] openmeteo_get_forecast`, `[filesystem] write_file`, `[notion] ...`, `[local] suggestWorkoutTemplate`.
 
 Чтобы понять, что изменилось после правки промпта или модели, запустите replay старого trace:
 
