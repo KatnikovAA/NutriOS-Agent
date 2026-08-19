@@ -14,6 +14,11 @@ import { calculateFinalScore, calculateImproved } from "./score";
 import { traceRun } from "./traceRun";
 import { validateReviewWithRetry, type Review } from "./validateReview";
 
+const DEEPSEEK_TOOL_MODEL_SETTINGS = {
+  // Agents SDK 0.16 does not preserve DeepSeek reasoning_content across a tool loop.
+  providerData: { thinking: { type: "disabled" } },
+};
+
 export type HealthAgentResult = {
   plan: string | null;
   review: Review;
@@ -136,6 +141,7 @@ async function saveApprovedPlanWithMcp(
   const beforeCount = toolCalls.length;
   const savingAgent = createHealthCoachAgent(instructions, [], {
     mcpServers,
+    modelSettings: DEEPSEEK_TOOL_MODEL_SETTINGS,
     toolUseBehavior: { stopAtToolNames: ["save_health_plan"] },
   });
 
@@ -187,7 +193,7 @@ export async function runHealthAgent(task: string, maxRounds = 3): Promise<Healt
         createSuggestWorkoutTemplateTool(recordLocalToolCall),
         createGenerateShoppingListTool(recordLocalToolCall),
       ],
-      { mcpServers: mcp.servers },
+      { mcpServers: mcp.servers, modelSettings: DEEPSEEK_TOOL_MODEL_SETTINGS },
     );
     const safetyReviewerAgent = createSafetyReviewerAgent(prompts.reviewer);
     let plan = await runText(
