@@ -26,6 +26,11 @@ import { Textarea } from "@/components/ui/textarea";
 
 type ReviewVerdict = "approve" | "revise" | "needs_human_professional";
 
+type KnowledgeRetrievalTrace = {
+  query: string;
+  chunks: { file: string; heading: string; similarity: number }[];
+};
+
 type Result = {
   plan: string | null;
   review: { verdict: ReviewVerdict; score: number; issues: string[] };
@@ -35,6 +40,7 @@ type Result = {
   promptVersions: { coach: string; reviewer: string };
   durationMs: number;
   toolCalls: string[];
+  retrievals: KnowledgeRetrievalTrace[];
 };
 
 type NotionSaveResult = {
@@ -390,7 +396,7 @@ export default function Home() {
                 <Separator />
                 <RoundHistory rounds={result.rounds} />
                 <Separator />
-                <ToolCallHistory toolCalls={result.toolCalls} />
+                <ToolCallHistory toolCalls={result.toolCalls} retrievals={result.retrievals} />
                 <Separator />
                 <div className="space-y-2">
                   <h2 className="text-sm font-medium">Issues</h2>
@@ -460,7 +466,14 @@ function RoundHistory({ rounds }: { rounds: Result["rounds"] }) {
   );
 }
 
-function ToolCallHistory({ toolCalls }: { toolCalls: string[] }) {
+function ToolCallHistory({
+  toolCalls,
+  retrievals,
+}: {
+  toolCalls: string[];
+  retrievals: KnowledgeRetrievalTrace[];
+}) {
+  let retrievalIndex = 0;
   return (
     <details className="rounded-md border bg-background px-3 py-2" open>
       <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium">
@@ -474,10 +487,15 @@ function ToolCallHistory({ toolCalls }: { toolCalls: string[] }) {
         <ol className="mt-3 space-y-2">
           {toolCalls.map((toolCall, index) => {
             const parsed = parseToolCall(toolCall);
+            const retrieval = parsed.name === "searchKnowledge" ? retrievals[retrievalIndex++] : undefined;
             return (
               <li key={`${index}-${toolCall}`} className="flex items-center gap-2 rounded-md bg-muted px-3 py-2 text-sm">
                 <span className="text-xs tabular-nums text-muted-foreground">{index + 1}</span>
-                <span className="truncate">{toolLabels[parsed.name] ?? parsed.name}</span>
+                <span className="truncate">
+                  {retrieval
+                    ? `🔍 knowledge: ${retrieval.query} → ${retrieval.chunks.length} chunks`
+                    : (toolLabels[parsed.name] ?? parsed.name)}
+                </span>
                 <Badge variant="secondary" className="ml-auto shrink-0">
                   {parsed.source}
                 </Badge>

@@ -1,12 +1,14 @@
 import { readFile } from "node:fs/promises";
 import { runHealthAgent } from "../src/harness/runHealthAgent";
 import { type RunTrace } from "../src/harness/traceRun";
+import type { KnowledgeRetrievalTrace } from "../src/rag/types";
 
 type ComparableRun = {
   verdict: string;
   score: number;
   rounds: number;
   toolCalls: string[];
+  retrievals: KnowledgeRetrievalTrace[];
   promptVersions: unknown;
 };
 
@@ -15,7 +17,10 @@ function sameJson(left: unknown, right: unknown) {
 }
 
 function formatValue(value: unknown) {
-  if (Array.isArray(value)) return value.length > 0 ? value.join(", ") : "-";
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "-";
+    return value.every((item) => typeof item === "string") ? value.join(", ") : JSON.stringify(value);
+  }
   if (typeof value === "object" && value !== null) return JSON.stringify(value);
   return String(value);
 }
@@ -26,6 +31,7 @@ function printComparison(oldRun: ComparableRun, newRun: ComparableRun) {
     ["score", oldRun.score, newRun.score, oldRun.score === newRun.score],
     ["rounds", oldRun.rounds, newRun.rounds, oldRun.rounds === newRun.rounds],
     ["toolCalls", oldRun.toolCalls, newRun.toolCalls, sameJson(oldRun.toolCalls, newRun.toolCalls)],
+    ["retrievals", oldRun.retrievals, newRun.retrievals, sameJson(oldRun.retrievals, newRun.retrievals)],
     [
       "promptVersions",
       oldRun.promptVersions,
@@ -55,6 +61,7 @@ async function main() {
     score: trace.finalScore,
     rounds: trace.rounds.length,
     toolCalls: trace.toolCalls,
+    retrievals: trace.retrievals ?? [],
     promptVersions: trace.promptVersions,
   };
   const newRun: ComparableRun = {
@@ -62,6 +69,7 @@ async function main() {
     score: result.finalScore,
     rounds: result.rounds.length,
     toolCalls: result.toolCalls,
+    retrievals: result.retrievals,
     promptVersions: result.promptVersions,
   };
 

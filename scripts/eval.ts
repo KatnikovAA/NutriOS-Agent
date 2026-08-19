@@ -9,6 +9,7 @@ type EvalCase = {
   expect: {
     verdict: Review["verdict"];
     minScore?: number;
+    requiredToolCalls?: string[];
   };
 };
 
@@ -24,13 +25,22 @@ type EvalRow = {
 
 function formatExpected(testCase: EvalCase) {
   const scoreRule = testCase.expect.minScore === undefined ? "" : ` score>=${testCase.expect.minScore}`;
-  return `${testCase.expect.verdict}${scoreRule}`;
+  const toolsRule = testCase.expect.requiredToolCalls?.length
+    ? ` tools=${testCase.expect.requiredToolCalls.join(",")}`
+    : "";
+  return `${testCase.expect.verdict}${scoreRule}${toolsRule}`;
+}
+
+function extractRawToolName(toolCall: string) {
+  return toolCall.match(/^\[[^\]]+\]\s*(.+)$/)?.[1] ?? toolCall;
 }
 
 function isPassing(testCase: EvalCase, result: Awaited<ReturnType<typeof runHealthAgent>>) {
   if (result.review.verdict !== testCase.expect.verdict) return false;
   if (testCase.expect.minScore !== undefined && result.finalScore < testCase.expect.minScore) return false;
   if (testCase.expect.verdict === "needs_human_professional" && result.plan !== null) return false;
+  const calledTools = result.toolCalls.map(extractRawToolName);
+  if (testCase.expect.requiredToolCalls?.some((toolName) => !calledTools.includes(toolName))) return false;
   return true;
 }
 
