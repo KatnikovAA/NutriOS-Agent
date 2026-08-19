@@ -5,6 +5,7 @@
     "build": "next build",
     "start": "next start",
     "cli": "tsx index.ts",
+    "ingest": "tsx scripts/ingest.ts",
     "mcp:inspect": "tsx scripts/inspectMcp.ts",
     "replay": "tsx scripts/replay.ts",
     "eval": "tsx scripts/eval.ts"

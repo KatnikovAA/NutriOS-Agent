@@ -10,12 +10,14 @@
 
 **Spec:** `docs/superpowers/specs/2026-08-19-simple-rag-design.md`
 
+**Approved amendment (2026-08-19):** Embeddings выполняются локально через Ollama `bge-m3`, итоговая размерность равна 1024. Так как `docs/001_create_knowledge_chunks_table.sql` уже выполнен, перед ingest нужно применить `docs/002_change_knowledge_embedding_to_1024.sql`; упоминания OpenAI и 1536 ниже заменяются этим решением.
+
 ## Global Constraints
 
 - Не использовать RAG-фреймворки, Supabase SDK, reranking, hybrid search, query rewriting или дополнительные поисковые стадии.
 - Один пользовательский retrieval = один embedding-запрос и один RPC similarity-запрос.
 - `profile.md` и `log.md` остаются в markdown/MCP и никогда не индексируются.
-- Embedding dimension фиксирован как 1536 и проверяется в коде.
+- Embedding выполняется локально через Ollama `bge-m3`; dimension фиксирован как 1024 в итоговой SQL-схеме и проверяется по env.
 - Все SQL-файлы находятся только в `docs/` и имеют числовой префикс.
 - Не писать тесты и не добавлять тестовый фреймворк; проверять через build, ingest, eval, CLI, trace и UI.
 - Safety Reviewer остаётся без tools и побочных эффектов.
@@ -33,6 +35,7 @@
 - `knowledge/recovery_rules.md` — 12 секций с правилами восстановления.
 - `knowledge/personal_preferences.md` — 12 секций с учебными предпочтениями.
 - `docs/001_create_knowledge_chunks_table.sql` — pgvector-схема, индекс и RPC.
+- `docs/002_change_knowledge_embedding_to_1024.sql` — перевод применённой схемы на Ollama `bge-m3`/1024.
 - `src/rag/embeddings.ts` — OpenAI-compatible embedding client.
 - `src/rag/supabaseRest.ts` — server-only Supabase REST helpers.
 - `src/rag/types.ts` — общие типы chunks и retrieval trace.

@@ -12,7 +12,7 @@
 - Не переносить profile/log в Supabase.
 - Не добавлять тестовый фреймворк и не писать автоматические тесты.
 - Все SQL-файлы хранить только в `docs/` и нумеровать по порядку выполнения.
-- Использовать embedding размерности 1536 и проверять размер ответа во время ingest и retrieval.
+- Использовать локальный Ollama `bge-m3` размерности 1024 и проверять размер ответа во время ingest и retrieval.
 
 ## База знаний
 
@@ -30,10 +30,10 @@
 
 Серверные процессы используют следующие переменные окружения:
 
-- `EMBEDDING_BASE_URL` — корневой URL OpenAI-compatible API;
-- `EMBEDDING_API_KEY` — ключ API embeddings;
-- `EMBEDDING_MODEL` — имя embedding-модели;
-- `EMBEDDING_DIMENSIONS=1536` — ожидаемая и фиксированная размерность;
+- `EMBEDDING_BASE_URL=http://127.0.0.1:11434/v1` — локальный OpenAI-compatible URL Ollama;
+- `EMBEDDING_API_KEY=ollama` — placeholder для локального OpenAI-compatible запроса;
+- `EMBEDDING_MODEL=bge-m3` — локальная multilingual embedding-модель;
+- `EMBEDDING_DIMENSIONS=1024` — ожидаемая размерность `bge-m3`;
 - `SUPABASE_URL` — URL проекта Supabase;
 - `SUPABASE_SERVICE_ROLE_KEY` — серверный ключ для ingest и RPC.
 
@@ -41,10 +41,12 @@
 
 ## Схема Supabase
 
-Файл `docs/001_create_knowledge_chunks_table.sql`:
+Файл `docs/001_create_knowledge_chunks_table.sql` создаёт исходную схему размерности 1536. Так как он уже был применён до перехода на локальный Ollama, `docs/002_change_knowledge_embedding_to_1024.sql` очищает пока не заполненную таблицу, переводит колонку и RPC на размерность 1024 и пересоздаёт индекс.
+
+Итоговая схема:
 
 1. включает расширение `vector` в схеме `extensions`;
-2. создаёт таблицу `knowledge_chunks` с полями `id`, `file`, `heading`, `content` и `embedding extensions.vector(1536)`;
+2. содержит таблицу `knowledge_chunks` с полями `id`, `file`, `heading`, `content` и итоговым `embedding extensions.vector(1024)`;
 3. создаёт HNSW-индекс с `vector_cosine_ops`;
 4. создаёт stable SQL-функцию `match_knowledge_chunks(query_embedding, match_count)`, которая возвращает `file`, `heading`, `content` и `1 - cosine_distance` как `similarity`;
 5. ограничивает `match_count` безопасным диапазоном внутри функции.
@@ -53,7 +55,7 @@ SQL выполняется пользователем в Supabase до перв�
 
 ## Embeddings
 
-`src/rag/embeddings.ts` отвечает только за OpenAI-compatible embeddings. Функция принимает строку или массив строк, вызывает `POST {EMBEDDING_BASE_URL}/embeddings` с `model`, `input` и `encoding_format: "float"`, восстанавливает порядок по `data[].index` и проверяет число результатов и длину каждого вектора. HTTP-ошибки, некорректный JSON, пустые embeddings и размерность не 1536 превращаются в понятные исключения без вывода ключей.
+`src/rag/embeddings.ts` отвечает только за OpenAI-compatible embeddings. Функция принимает строку или массив строк, вызывает локальный Ollama `POST {EMBEDDING_BASE_URL}/embeddings` с `model`, `input` и `encoding_format: "float"`, восстанавливает порядок по `data[].index` и проверяет число результатов и длину каждого вектора по `EMBEDDING_DIMENSIONS`. HTTP-ошибки, некорректный JSON, пустые embeddings и неправильная размерность превращаются в понятные исключения.
 
 ## Ingest
 
@@ -76,7 +78,7 @@ type KnowledgeChunk = {
 async function searchKnowledge(query: string, topK = 5): Promise<KnowledgeChunk[]>;
 ```
 
-Функция отклоняет пустой запрос и нецелый `topK` вне диапазона 1–20, получает ровно один query embedding, затем вызывает Supabase REST RPC `match_knowledge_chunks` ровно один раз. Ответ RPC проверяется и нормализуется без reranking или дополнительной сортировки в приложении.
+Функция отклоняет пустой запрос и нецелый `topK` вне диапазона 1–20, получает ровно один query embedding размерности 1024, затем вызывает Supabase REST RPC `match_knowledge_chunks` ровно один раз. Ответ RPC проверяется и нормализуется без reranking или дополнительной сортировки в приложении.
 
 ## Tool и интеграция с агентом
 
@@ -111,8 +113,8 @@ Eval-схема получает необязательное поле `expect.r
 
 ## Ошибки и безопасность
 
-Отсутствующая env-переменная, ошибка embeddings/Supabase, размерность не 1536 и неправильная форма RPC-ответа завершают соответствующий запуск с понятным сообщением. `SUPABASE_SERVICE_ROLE_KEY` используется только на сервере и не возвращается в API или trace. Ингест индексирует только фиксированный список файлов из `knowledge/`, не `data/`, поэтому личная память не может случайно попасть в Supabase.
+Отсутствующая env-переменная, недоступный локальный Ollama, ошибка Supabase, размерность не 1024 и неправильная форма RPC-ответа завершают соответствующий запуск с понятным сообщением. `SUPABASE_SERVICE_ROLE_KEY` используется только на сервере и не возвращается в API или trace; helper поддерживает новый `sb_secret_...` через `apikey` без ошибочного Bearer-заголовка. Ингест индексирует только фиксированный список файлов из `knowledge/`, не `data/`, поэтому личная память не может случайно попасть в Supabase.
 
 ## Документация и проверка
 
-README получает инструкции по переменным окружения, применению `docs/001_create_knowledge_chunks_table.sql`, запуску ingest и раздел «Memory vs RAG» из 5–6 предложений. Проверка реализации состоит из `npm run build`, двух последовательных `npm run ingest`, `npm run eval`, CLI-запроса про белковый ужин без молочки, просмотра сохранённого trace и ручной проверки UI. Успешный trace содержит retrieval query и заголовки chunks из `knowledge/recipes.md`, а повторный ingest оставляет то же число строк без дублей.
+README получает инструкции по локальному Ollama, переменным окружения, последовательному применению `docs/001_create_knowledge_chunks_table.sql` и `docs/002_change_knowledge_embedding_to_1024.sql`, запуску ingest и раздел «Memory vs RAG» из 5–6 предложений. Проверка реализации состоит из локального embedding-вызова, `npm run build`, двух последовательных `npm run ingest`, `npm run eval`, CLI-запроса про белковый ужин без молочки, просмотра сохранённого trace и ручной проверки UI. Успешный trace содержит retrieval query и заголовки chunks из `knowledge/recipes.md`, а повторный ingest оставляет то же число строк без дублей.
