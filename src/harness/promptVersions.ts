@@ -2,7 +2,7 @@ import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
 export const ACTIVE_PROMPTS = {
-  coach: "v3",
+  coach: "v4",
   reviewer: "v1",
 } as const;
 

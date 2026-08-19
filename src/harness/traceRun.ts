@@ -13,6 +13,7 @@ export type RunTrace = {
     review: HealthAgentResult["review"];
   }[];
   toolCalls: string[];
+  retrievals: HealthAgentResult["retrievals"];
   finalScore: number;
   verdict: HealthAgentResult["review"]["verdict"];
   durationMs: number;
@@ -37,6 +38,7 @@ export async function traceRun(task: string, model: string, result: HealthAgentR
       review: round.review,
     })),
     toolCalls: result.toolCalls,
+    retrievals: result.retrievals,
     finalScore: result.finalScore,
     verdict: result.review.verdict,
     durationMs: result.durationMs,

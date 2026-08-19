@@ -2,6 +2,8 @@ import { Agent, type MCPServer, Runner } from "@openai/agents-core";
 import { OpenAIProvider } from "@openai/agents-openai";
 import { createHealthCoachAgent } from "../agents/healthCoach";
 import { createSafetyReviewerAgent } from "../agents/safetyReviewer";
+import type { KnowledgeRetrievalTrace } from "../rag/types";
+import { createSearchKnowledgeTool } from "../skills/knowledge";
 import { createGenerateShoppingListTool } from "../skills/shopping";
 import { createSuggestWorkoutTemplateTool } from "../skills/workouts";
 import { loadEnv } from "./env";
@@ -21,6 +23,7 @@ export type HealthAgentResult = {
   promptVersions: ActivePromptVersions;
   durationMs: number;
   toolCalls: string[];
+  retrievals: KnowledgeRetrievalTrace[];
 };
 
 type RunWithItems = {
@@ -91,6 +94,7 @@ function buildResult(
   promptVersions: ActivePromptVersions,
   startTime: number,
   toolCalls: string[],
+  retrievals: KnowledgeRetrievalTrace[],
 ): HealthAgentResult {
   return {
     plan,
@@ -101,6 +105,7 @@ function buildResult(
     promptVersions,
     durationMs: Date.now() - startTime,
     toolCalls,
+    retrievals,
   };
 }
 
@@ -113,8 +118,9 @@ async function buildAndTraceResult(
   promptVersions: ActivePromptVersions,
   startTime: number,
   toolCalls: string[],
+  retrievals: KnowledgeRetrievalTrace[],
 ) {
-  const result = buildResult(plan, review, rounds, promptVersions, startTime, toolCalls);
+  const result = buildResult(plan, review, rounds, promptVersions, startTime, toolCalls, retrievals);
   await traceRun(task, model, result);
   return result;
 }
@@ -165,13 +171,22 @@ export async function runHealthAgent(task: string, maxRounds = 3): Promise<Healt
   const runner = new Runner({ model, modelProvider, tracingDisabled: true });
   const { prompts, versions } = await loadActivePrompts();
   const toolCalls: string[] = [];
+  const retrievals: KnowledgeRetrievalTrace[] = [];
   const mcp = await connectConfiguredMcpServers();
   const recordLocalToolCall = (name: string) => recordToolCall(toolCalls, mcp.toolSources, name);
+  const recordKnowledgeRetrieval = (event: KnowledgeRetrievalTrace) => {
+    recordLocalToolCall("searchKnowledge");
+    retrievals.push(event);
+  };
 
   try {
     const healthCoachAgent = createHealthCoachAgent(
       prompts.coach,
-      [createSuggestWorkoutTemplateTool(recordLocalToolCall), createGenerateShoppingListTool(recordLocalToolCall)],
+      [
+        createSearchKnowledgeTool(recordKnowledgeRetrieval),
+        createSuggestWorkoutTemplateTool(recordLocalToolCall),
+        createGenerateShoppingListTool(recordLocalToolCall),
+      ],
       { mcpServers: mcp.servers },
     );
     const safetyReviewerAgent = createSafetyReviewerAgent(prompts.reviewer);
@@ -197,11 +212,31 @@ export async function runHealthAgent(task: string, maxRounds = 3): Promise<Healt
       );
 
       if (review.verdict === "needs_human_professional") {
-        return buildAndTraceResult(cleanTask, model, null, review, rounds, versions, startTime, toolCalls);
+        return buildAndTraceResult(
+          cleanTask,
+          model,
+          null,
+          review,
+          rounds,
+          versions,
+          startTime,
+          toolCalls,
+          retrievals,
+        );
       }
       if (review.verdict === "approve") {
         await saveApprovedPlanWithMcp(runner, prompts.coach, plan, mcp.servers, toolCalls, mcp.toolSources);
-        return buildAndTraceResult(cleanTask, model, plan, review, rounds, versions, startTime, toolCalls);
+        return buildAndTraceResult(
+          cleanTask,
+          model,
+          plan,
+          review,
+          rounds,
+          versions,
+          startTime,
+          toolCalls,
+          retrievals,
+        );
       }
 
       plan = await runText(
@@ -214,7 +249,17 @@ export async function runHealthAgent(task: string, maxRounds = 3): Promise<Healt
     }
     const lastRound = rounds.at(-1);
     if (lastRound) {
-      await buildAndTraceResult(cleanTask, model, null, lastRound.review, rounds, versions, startTime, toolCalls);
+      await buildAndTraceResult(
+        cleanTask,
+        model,
+        null,
+        lastRound.review,
+        rounds,
+        versions,
+        startTime,
+        toolCalls,
+        retrievals,
+      );
     }
     throw new Error(`Не удалось получить approve за ${maxRounds} раунда ревизии`);
   } finally {
