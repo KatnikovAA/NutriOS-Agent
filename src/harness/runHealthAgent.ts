@@ -146,18 +146,19 @@ async function saveApprovedPlanWithMcp(
   });
 
   // Harness controls persistence: this save path runs only after approve.
-  // DeepSeek thinking-mode rejects forced toolChoice, so we verify that the MCP tool was called.
-  await runText(
-    runner,
-    savingAgent,
-    `Safety reviewer вернул verdict=approve. Вызови tool save_health_plan и сохрани этот финальный план без изменений:\n\n${plan}`,
-    toolCalls,
-    toolSources,
-  );
-
-  if (!hasToolCall(toolCalls.slice(beforeCount), "save_health_plan")) {
-    throw new Error("Финальный план одобрен, но save_health_plan не был вызван");
+  // DeepSeek thinking-mode rejects forced toolChoice, so we verify the call and allow one retry.
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    await runText(
+      runner,
+      savingAgent,
+      `Safety reviewer вернул verdict=approve. Вызови только tool save_health_plan и сохрани этот финальный план без изменений. Не отвечай текстом вместо tool-вызова.\n\n${plan}`,
+      toolCalls,
+      toolSources,
+    );
+    if (hasToolCall(toolCalls.slice(beforeCount), "save_health_plan")) return;
   }
+
+  throw new Error("Финальный план одобрен, но save_health_plan не был вызван после двух попыток");
 }
 
 export async function runHealthAgent(task: string, maxRounds = 3): Promise<HealthAgentResult> {
