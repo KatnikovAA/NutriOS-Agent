@@ -1,6 +1,6 @@
 # NutriOS-Agent
 
-Простое локальное Next.js-приложение с wellness-агентом. Агент читает профиль и дневник из markdown-файлов, генерирует план, проверяет его safety-reviewer-агентом и сохраняет результат.
+Простое локальное Next.js-приложение с wellness-агентом. Агент читает профиль и дневник из markdown-файлов, ищет рекомендации в RAG-базе знаний, генерирует план, проверяет его safety-reviewer-агентом и сохраняет результат.
 
 ## Запуск UI
 
@@ -17,6 +17,27 @@ npm run dev
 - `data/recipes.md` — локальные любимые рецепты;
 - `data/output.md` — последний одобренный план.
 - `plans/` — дополнительные markdown-файлы планов, которые агент может создавать через filesystem MCP по явной просьбе пользователя.
+
+## Настройка RAG
+
+Embeddings вычисляются локально через Ollama и модель `bge-m3`, а chunks хранятся в Supabase Postgres с расширением pgvector. Установите модель командой `ollama pull bge-m3` и убедитесь, что Ollama доступен на `http://127.0.0.1:11434`. Затем выполните SQL-файлы в Supabase SQL Editor строго по порядку: сначала `docs/001_create_knowledge_chunks_table.sql`, затем `docs/002_change_knowledge_embedding_to_1024.sql`.
+
+Добавьте server-only настройки в `.env`:
+
+```dotenv
+SUPABASE_URL=https://<project-ref>.supabase.co
+SUPABASE_SERVICE_ROLE_KEY=<sb_secret_... или legacy service_role JWT>
+EMBEDDING_BASE_URL=http://127.0.0.1:11434/v1
+EMBEDDING_API_KEY=ollama
+EMBEDDING_MODEL=bge-m3
+EMBEDDING_DIMENSIONS=1024
+```
+
+Не передавайте `SUPABASE_SERVICE_ROLE_KEY` в браузер и не добавляйте `.env` в Git. Для загрузки пяти файлов из `knowledge/` выполните `npm run ingest`: скрипт вычисляет embeddings, полностью очищает `knowledge_chunks` и записывает ровно 60 секций заново, поэтому повторный запуск не создаёт дублей. Размерность `bge-m3` равна 1024; смена embedding-модели на модель с другой размерностью требует нового пронумерованного SQL-файла в `docs/` и повторного ingest.
+
+## Memory vs RAG
+
+`data/profile.md` и `data/log.md` — личная память агента: они описывают, кто пользователь и что происходило в последние дни. Эти файлы остаются локальными и доступны Health Coach через markdown/MCP. Каталог `knowledge/` — общая база знаний: рецепты, правила питания, шаблоны тренировок и восстановления, то есть то, что агент умеет предложить. Во время ingest секции knowledge получают embeddings и сохраняются в Supabase pgvector, но profile и log туда не попадают. Перед профильной рекомендацией агент ищет релевантные knowledge chunks и использует их содержание вместо выдумывания рецептов. Таким образом, Memory отвечает за персональный контекст «кто ты», а RAG — за проверяемый набор возможностей «что мы умеем».
 
 ## MCP-серверы
 
@@ -94,7 +115,7 @@ npm run cli -- "составь план питания на завтра"
 
 ## Как дебажить агента
 
-Каждый запуск UI или CLI сохраняет локальный trace в `runs/run-<timestamp>.json`. В trace видны задача, версии промптов, модель, краткие фрагменты планов по раундам, review, tool calls, score, verdict и duration. Tools логируются в одном поле `toolCalls` с источником: `[markdown-health] read_profile`, `[weather] openmeteo_get_forecast`, `[filesystem] write_file`, `[notion] ...`, `[local] suggestWorkoutTemplate`.
+Каждый запуск UI или CLI сохраняет локальный trace в `runs/run-<timestamp>.json`. В trace видны задача, версии промптов, модель, краткие фрагменты планов по раундам, review, tool calls, retrieval query и заголовки найденных chunks, score, verdict и duration. Tools логируются в одном поле `toolCalls` с источником: `[markdown-health] read_profile`, `[weather] openmeteo_get_forecast`, `[filesystem] write_file`, `[notion] ...`, `[local] suggestWorkoutTemplate`, `[local] searchKnowledge`. В UI соответствующий вызов показывается как `🔍 knowledge: <query> → N chunks` в блоке «Что сделал агент».
 
 Чтобы понять, что изменилось после правки промпта или модели, запустите replay старого trace:
 
