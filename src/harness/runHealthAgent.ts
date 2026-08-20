@@ -7,6 +7,7 @@ import { createSearchKnowledgeTool } from "../skills/knowledge";
 import { createGenerateShoppingListTool } from "../skills/shopping";
 import { createSuggestWorkoutTemplateTool } from "../skills/workouts";
 import { loadEnv } from "./env";
+import type { HealthAgentEvent, HealthAgentResultEvent, HealthAgentRunOptions } from "./events";
 import { connectConfiguredMcpServers, extractRawToolName, formatToolCallName, type ToolSource } from "./mcpServers";
 import { loadActivePrompts, type ActivePromptVersions } from "./promptVersions";
 import { appendRound, type RoundState } from "./rounds";
@@ -59,9 +60,11 @@ async function runText(
   input: string,
   toolCalls: string[] = [],
   toolSources = new Map<string, ToolSource>(),
+  flushEvents: () => Promise<void> = async () => {},
 ) {
   const beforeCount = toolCalls.length;
   const result = await runner.run(agent, input);
+  await flushEvents();
   const itemCalls = extractToolCallNames(result);
   const callbackCalls = toolCalls.slice(beforeCount).map(extractRawToolName);
   for (const itemCall of itemCalls) {
@@ -137,6 +140,7 @@ async function saveApprovedPlanWithMcp(
   mcpServers: MCPServer[],
   toolCalls: string[],
   toolSources: Map<string, ToolSource>,
+  flushEvents: () => Promise<void>,
 ) {
   const beforeCount = toolCalls.length;
   const savingAgent = createHealthCoachAgent(instructions, [], {
@@ -154,6 +158,7 @@ async function saveApprovedPlanWithMcp(
       `Safety reviewer вернул verdict=approve. Вызови только tool save_health_plan и сохрани этот финальный план без изменений. Не отвечай текстом вместо tool-вызова.\n\n${plan}`,
       toolCalls,
       toolSources,
+      flushEvents,
     );
     if (hasToolCall(toolCalls.slice(beforeCount), "save_health_plan")) return;
   }
@@ -161,7 +166,11 @@ async function saveApprovedPlanWithMcp(
   throw new Error("Финальный план одобрен, но save_health_plan не был вызван после двух попыток");
 }
 
-export async function runHealthAgent(task: string, maxRounds = 3): Promise<HealthAgentResult> {
+export async function runHealthAgent(
+  task: string,
+  maxRounds = 3,
+  options: HealthAgentRunOptions = {},
+): Promise<HealthAgentResult> {
   const startTime = Date.now();
   loadEnv();
   const cleanTask = task.trim();
@@ -180,10 +189,95 @@ export async function runHealthAgent(task: string, maxRounds = 3): Promise<Healt
   const toolCalls: string[] = [];
   const retrievals: KnowledgeRetrievalTrace[] = [];
   const mcp = await connectConfiguredMcpServers();
+  let eventQueue: Promise<void> = Promise.resolve();
+  const enqueueEvent = (event: HealthAgentEvent) => {
+    eventQueue = eventQueue.then(async () => {
+      await options.onEvent?.(event);
+    });
+  };
+  const flushEvents = () => eventQueue;
+  const emitResult = async (result: HealthAgentResult) => {
+    const event: HealthAgentResultEvent = {
+      type: "result",
+      id: "result",
+      review: result.review,
+      rounds: result.rounds,
+      finalScore: result.finalScore,
+      improved: result.improved,
+      promptVersions: result.promptVersions,
+      durationMs: result.durationMs,
+      toolCalls: result.toolCalls,
+      retrievals: result.retrievals,
+    };
+    enqueueEvent(event);
+    await flushEvents();
+  };
+  let toolEventIndex = 0;
+  const pendingKnowledgeStageIds = new Map<string, string[]>();
+
+  runner.on("agent_tool_start", (_context, _agent, tool, details) => {
+    const name = tool.name;
+    const configuredSource = mcp.toolSources.get(name);
+    const isMcpTool = Boolean(configuredSource && configuredSource !== "local");
+    const source = name === "searchKnowledge" ? "rag" : isMcpTool ? "mcp" : "local";
+    let query: string | undefined;
+    const rawArguments =
+      "arguments" in details.toolCall && typeof details.toolCall.arguments === "string"
+        ? details.toolCall.arguments
+        : undefined;
+
+    if (name === "searchKnowledge" && rawArguments) {
+      try {
+        const args = JSON.parse(rawArguments) as { query?: unknown };
+        if (typeof args.query === "string") query = args.query.trim();
+      } catch {
+        query = undefined;
+      }
+    }
+
+    toolEventIndex += 1;
+    enqueueEvent({
+      type: "tool_call",
+      id: `tool-${toolEventIndex}`,
+      name,
+      formattedName: formatToolCallName(name, mcp.toolSources),
+      source,
+      server: isMcpTool ? configuredSource : undefined,
+      query,
+    });
+
+    if (name === "searchKnowledge") {
+      const stageId = `searching-knowledge-${toolEventIndex}`;
+      const queryKey = query ?? "";
+      pendingKnowledgeStageIds.set(queryKey, [...(pendingKnowledgeStageIds.get(queryKey) ?? []), stageId]);
+      enqueueEvent({
+        type: "stage",
+        id: stageId,
+        stage: "searching_knowledge",
+        status: "active",
+        query,
+      });
+    }
+  });
+
   const recordLocalToolCall = (name: string) => recordToolCall(toolCalls, mcp.toolSources, name);
   const recordKnowledgeRetrieval = (event: KnowledgeRetrievalTrace) => {
     recordLocalToolCall("searchKnowledge");
     retrievals.push(event);
+    const queryKey = pendingKnowledgeStageIds.has(event.query) ? event.query : "";
+    const stageIds = pendingKnowledgeStageIds.get(queryKey) ?? [];
+    const stageId = stageIds.shift();
+    if (stageIds.length > 0) pendingKnowledgeStageIds.set(queryKey, stageIds);
+    else pendingKnowledgeStageIds.delete(queryKey);
+    if (stageId) {
+      enqueueEvent({
+        type: "stage",
+        id: stageId,
+        stage: "searching_knowledge",
+        status: "completed",
+        query: event.query,
+      });
+    }
   };
 
   try {
@@ -197,29 +291,68 @@ export async function runHealthAgent(task: string, maxRounds = 3): Promise<Healt
       { mcpServers: mcp.servers, modelSettings: DEEPSEEK_TOOL_MODEL_SETTINGS },
     );
     const safetyReviewerAgent = createSafetyReviewerAgent(prompts.reviewer);
+    enqueueEvent({ type: "stage", id: "reading-profile", stage: "reading_profile", status: "active" });
+    enqueueEvent({
+      type: "stage",
+      id: "generating-plan-1",
+      stage: "generating_plan",
+      status: "active",
+      round: 1,
+    });
+    await flushEvents();
     let plan = await runText(
       runner,
       healthCoachAgent,
       `Задача пользователя: ${cleanTask}\n\nСоставь полезный ответ. Если для качества нужны профиль, дневник, рецепты, тренировка или список покупок, сам вызови доступные tools.`,
       toolCalls,
       mcp.toolSources,
+      flushEvents,
     );
+    enqueueEvent({ type: "stage", id: "reading-profile", stage: "reading_profile", status: "completed" });
+    enqueueEvent({
+      type: "stage",
+      id: "generating-plan-1",
+      stage: "generating_plan",
+      status: "completed",
+      round: 1,
+    });
+    await flushEvents();
     let rounds: RoundState[] = [];
 
     for (let round = 1; round <= maxRounds; round++) {
+      const reviewStageId = `reviewing-safety-${round}`;
+      enqueueEvent({
+        type: "stage",
+        id: reviewStageId,
+        stage: "reviewing_safety",
+        status: "active",
+        round,
+      });
+      await flushEvents();
       const review = forceMedicalBoundary(
         cleanTask,
         await validateReviewWithRetry(`План для проверки:\n${plan}`, (prompt) =>
-          runText(runner, safetyReviewerAgent, prompt, toolCalls, mcp.toolSources),
+          runText(runner, safetyReviewerAgent, prompt, toolCalls, mcp.toolSources, flushEvents),
         ),
       );
+      enqueueEvent({
+        type: "stage",
+        id: reviewStageId,
+        stage: "reviewing_safety",
+        status: "completed",
+        round,
+        verdict: review.verdict,
+        score: review.score,
+        issues: review.issues,
+      });
+      await flushEvents();
       rounds = appendRound(rounds, { round, plan, review });
       console.log(
         `round=${round} verdict=${review.verdict} score=${review.score} issues=${JSON.stringify(review.issues)}`,
       );
 
       if (review.verdict === "needs_human_professional") {
-        return buildAndTraceResult(
+        const result = await buildAndTraceResult(
           cleanTask,
           model,
           null,
@@ -230,10 +363,31 @@ export async function runHealthAgent(task: string, maxRounds = 3): Promise<Healt
           toolCalls,
           retrievals,
         );
+        await emitResult(result);
+        return result;
       }
       if (review.verdict === "approve") {
-        await saveApprovedPlanWithMcp(runner, prompts.coach, plan, mcp.servers, toolCalls, mcp.toolSources);
-        return buildAndTraceResult(
+        await saveApprovedPlanWithMcp(
+          runner,
+          prompts.coach,
+          plan,
+          mcp.servers,
+          toolCalls,
+          mcp.toolSources,
+          flushEvents,
+        );
+        await flushEvents();
+        enqueueEvent({
+          type: "stage",
+          id: "final-approved-plan",
+          stage: "final_approved_plan",
+          status: "completed",
+          round,
+          verdict: review.verdict,
+          score: review.score,
+        });
+        await flushEvents();
+        const result = await buildAndTraceResult(
           cleanTask,
           model,
           plan,
@@ -244,15 +398,36 @@ export async function runHealthAgent(task: string, maxRounds = 3): Promise<Healt
           toolCalls,
           retrievals,
         );
+        await emitResult(result);
+        return result;
       }
 
+      const revisionRound = round + 1;
+      const revisionStageId = `revising-${revisionRound}`;
+      enqueueEvent({
+        type: "stage",
+        id: revisionStageId,
+        stage: "revising",
+        status: "active",
+        round: revisionRound,
+      });
+      await flushEvents();
       plan = await runText(
         runner,
         healthCoachAgent,
         `Задача пользователя: ${cleanTask}\n\nПредыдущий план:\n${plan}\n\nЗамечания reviewer-а:\n${review.issues.map((issue) => `- ${issue}`).join("\n")}\n\nИсправь план с учетом замечаний. Если нужны профиль, дневник или рецепты, используй tools. Не добавляй медицинские советы.`,
         toolCalls,
         mcp.toolSources,
+        flushEvents,
       );
+      enqueueEvent({
+        type: "stage",
+        id: revisionStageId,
+        stage: "revising",
+        status: "completed",
+        round: revisionRound,
+      });
+      await flushEvents();
     }
     const lastRound = rounds.at(-1);
     if (lastRound) {
