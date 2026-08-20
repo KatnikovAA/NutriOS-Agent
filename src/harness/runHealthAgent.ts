@@ -201,7 +201,7 @@ export async function runHealthAgent(
       type: "result",
       id: "result",
       review: result.review,
-      rounds: result.rounds,
+      rounds: result.rounds.map(({ round, review }) => ({ round, review })),
       finalScore: result.finalScore,
       improved: result.improved,
       promptVersions: result.promptVersions,

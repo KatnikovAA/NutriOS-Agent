@@ -119,13 +119,37 @@ function formatDuration(durationMs: number) {
 
 function ResultSummary({ event }: { event: HealthAgentResultEvent }) {
   return (
-    <footer className="mt-5 flex flex-wrap items-center gap-x-4 gap-y-2 border-t pt-4 text-xs text-muted-foreground">
-      <span className="font-semibold text-foreground">{verdictLabels[event.review.verdict]}</span>
-      <span className="tabular-nums">Score {event.finalScore}/10</span>
-      <span className="tabular-nums">{event.rounds.length} раунд(а)</span>
-      <span className="tabular-nums">{formatDuration(event.durationMs)}</span>
-      <span className="ml-auto font-mono">{event.promptVersions.coach} · {event.promptVersions.reviewer}</span>
-    </footer>
+    <div className="mt-5 border-t pt-4">
+      <details className="rounded-lg bg-card/65 px-3 py-2">
+        <summary className="cursor-pointer text-xs font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
+          История раундов · {event.rounds.length}
+        </summary>
+        <ol className="mt-2 space-y-2">
+          {event.rounds.map((round) => (
+            <li key={round.round} className="rounded-md bg-muted/70 px-2.5 py-2 text-xs">
+              <div className="flex items-center justify-between gap-3">
+                <span className="font-medium">Раунд {round.round}</span>
+                <span className="tabular-nums text-muted-foreground">
+                  {verdictLabels[round.review.verdict]} · {round.review.score}/10
+                </span>
+              </div>
+              {round.review.issues.length > 0 ? (
+                <ul className="mt-1.5 list-disc space-y-1 pl-4 text-muted-foreground">
+                  {round.review.issues.map((issue, index) => <li key={`${round.round}-${index}`}>{issue}</li>)}
+                </ul>
+              ) : null}
+            </li>
+          ))}
+        </ol>
+      </details>
+      <footer className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
+        <span className="font-semibold text-foreground">{verdictLabels[event.review.verdict]}</span>
+        <span className="tabular-nums">Score {event.finalScore}/10</span>
+        <span>Improved: {event.improved ? "да" : "нет"}</span>
+        <span className="tabular-nums">{formatDuration(event.durationMs)}</span>
+        <span className="ml-auto font-mono">{event.promptVersions.coach} · {event.promptVersions.reviewer}</span>
+      </footer>
+    </div>
   );
 }
 
@@ -259,7 +283,7 @@ export default function Home() {
   }
 
   function handleComposerKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
-    if (event.key !== "Enter" || event.shiftKey) return;
+    if (event.nativeEvent.isComposing || event.key !== "Enter" || event.shiftKey) return;
     event.preventDefault();
     void submitText();
   }

@@ -1,6 +1,5 @@
 import type { KnowledgeRetrievalTrace } from "../rag/types";
 import type { ActivePromptVersions } from "./promptVersions";
-import type { RoundState } from "./rounds";
 import type { Review } from "./validateReview";
 
 export type HealthAgentStage =
@@ -33,11 +32,16 @@ export type HealthAgentToolCallEvent = {
   query?: string;
 };
 
+export type HealthAgentRoundEvent = {
+  round: number;
+  review: Review;
+};
+
 export type HealthAgentResultEvent = {
   type: "result";
   id: "result";
   review: Review;
-  rounds: RoundState[];
+  rounds: HealthAgentRoundEvent[];
   finalScore: number;
   improved: boolean;
   promptVersions: ActivePromptVersions;
