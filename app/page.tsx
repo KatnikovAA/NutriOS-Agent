@@ -4,6 +4,8 @@ import { useChat } from "@ai-sdk/react";
 import { DefaultChatTransport } from "ai";
 import { FormEvent, KeyboardEvent, useEffect, useRef, useState } from "react";
 
+import { MarkdownContent } from "../components/chat/markdown-content";
+import { NotionSaveAction } from "../components/chat/notion-save-action";
 import type { ChatMessage } from "../src/chat/types";
 import type {
   HealthAgentResultEvent,
@@ -213,9 +215,8 @@ function AssistantMessage({ message, running }: { message: ChatMessage; running:
       )}
 
       {needsProfessional && result ? <ProfessionalCard result={result} /> : null}
-      {!needsProfessional && text ? (
-        <div className="mt-4 whitespace-pre-wrap text-sm leading-7 text-foreground/90">{text}</div>
-      ) : null}
+      {!needsProfessional && text ? <MarkdownContent>{text}</MarkdownContent> : null}
+      {result?.review.verdict === "approve" && text ? <NotionSaveAction markdown={text} /> : null}
       {result ? <ResultSummary event={result} /> : null}
     </article>
   );
