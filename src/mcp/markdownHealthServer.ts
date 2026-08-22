@@ -10,6 +10,22 @@ function dataFile(name: string) {
   return join(dataDir, name);
 }
 
+async function ensureMarkdownFile(name: string, initialContent: string) {
+  await mkdir(dataDir, { recursive: true });
+  try {
+    await readFile(dataFile(name), "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    await writeFile(dataFile(name), initialContent, "utf8");
+  }
+}
+
+function localIsoDate() {
+  const now = new Date();
+  const localTime = new Date(now.getTime() - now.getTimezoneOffset() * 60_000);
+  return localTime.toISOString().slice(0, 10);
+}
+
 async function readMarkdownFile(name: string) {
   return readFile(dataFile(name), "utf8");
 }
@@ -66,7 +82,7 @@ function createMarkdownHealthServer() {
     "append_daily_log",
     {
       description:
-        "Добавляет новую markdown-запись в конец data/log.md. Используй только когда пользователь явно просит записать дневниковую заметку или сохранить запись дня.",
+        "Добавляет одобренную harness-ом markdown-запись в конец data/log.md. Этот persistence tool вызывается orchestration-кодом после safety approve и не предназначен для Health Coach.",
       inputSchema: z.object({
         entry: z.string().min(1).describe("Markdown-запись дневника, которую нужно добавить в data/log.md."),
       }),
@@ -75,6 +91,55 @@ function createMarkdownHealthServer() {
       await mkdir(dataDir, { recursive: true });
       await appendFile(dataFile("log.md"), `\n\n${entry.trim()}\n`, "utf8");
       return jsonResult({ ok: true });
+    },
+  );
+
+  server.registerTool(
+    "update_preferences",
+    {
+      description:
+        "Добавляет подтвержденное предпочтение в data/preferences.md. Harness вызывает tool после safety approve только при явном сигнале пользователя; Health Coach не должен вызывать его самостоятельно.",
+      inputSchema: z.object({
+        preference: z.string().min(1).describe("Явная формулировка предпочтения пользователя."),
+      }),
+    },
+    async ({ preference }) => {
+      await appendFile(dataFile("preferences.md"), `\n- ${localIsoDate()}: ${preference.trim()}\n`, "utf8");
+      return jsonResult({ ok: true });
+    },
+  );
+
+  server.registerTool(
+    "read_habits",
+    {
+      description:
+        "Возвращает журнал wellness-привычек из data/habits.md. Используй перед отчетом о текущих отметках привычек.",
+      inputSchema: z.object({}),
+    },
+    async () => textResult(await readMarkdownFile("habits.md")),
+  );
+
+  server.registerTool(
+    "check_habit",
+    {
+      description:
+        "Добавляет датированную отметку выполнения или невыполнения одной wellness-привычки в data/habits.md. Вызывай только по явной просьбе пользователя отметить привычку.",
+      inputSchema: z.object({
+        habit: z.string().min(1).describe("Короткое название привычки."),
+        completed: z.boolean().describe("Выполнена ли привычка."),
+        date: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional()
+          .describe("Дата отметки YYYY-MM-DD; по умолчанию текущая локальная дата."),
+        note: z.string().min(1).optional().describe("Необязательная короткая заметка."),
+      }),
+    },
+    async ({ habit, completed, date, note }) => {
+      const suffix = note ? ` — ${note.trim()}` : "";
+      const entry = `- [${completed ? "x" : " "}] ${date ?? localIsoDate()} — ${habit.trim()}${suffix}`;
+      await appendFile(dataFile("habits.md"), `\n${entry}\n`, "utf8");
+      return jsonResult({ ok: true, entry });
     },
   );
 
@@ -169,6 +234,10 @@ function createMarkdownHealthServer() {
 }
 
 async function main() {
+  await Promise.all([
+    ensureMarkdownFile("preferences.md", "# Предпочтения\n"),
+    ensureMarkdownFile("habits.md", "# Привычки\n"),
+  ]);
   const server = createMarkdownHealthServer();
   const transport = new StdioServerTransport();
   await server.connect(transport);
