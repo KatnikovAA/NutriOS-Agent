@@ -16,6 +16,8 @@ npm run dev
 - `data/log.md` — дневник последних дней;
 - `data/recipes.md` — локальные любимые рецепты;
 - `data/output.md` — последний одобренный план.
+- `data/preferences.md` — подтверждённые явные предпочтения;
+- `data/habits.md` — минимальный журнал отметок привычек;
 - `plans/` — дополнительные markdown-файлы планов, которые агент может создавать через filesystem MCP по явной просьбе пользователя.
 
 ## Настройка RAG
@@ -105,7 +107,7 @@ npm run cli -- "сохрани план страницей в мой Notion"
 
 ## CLI
 
-`index.ts` сохранён как тонкий враппер над `src/harness/runHealthAgent.ts`, поэтому прежний сценарий также доступен:
+`index.ts` остаётся тонким CLI-враппером, но теперь вызывает `src/os/runOS.ts`: задача проходит intent routing, общий harness и обязательный safety review.
 
 ```bash
 npm run cli -- "составь план питания на завтра"
@@ -115,7 +117,7 @@ npm run cli -- "составь план питания на завтра"
 
 ## Как дебажить агента
 
-Каждый запуск UI или CLI сохраняет локальный trace в `runs/run-<timestamp>.json`. В trace видны задача, версии промптов, модель, краткие фрагменты планов по раундам, review, tool calls, retrieval query и заголовки найденных chunks, score, verdict и duration. Tools логируются в одном поле `toolCalls` с источником: `[markdown-health] read_profile`, `[weather] openmeteo_get_forecast`, `[filesystem] write_file`, `[notion] ...`, `[local] suggestWorkoutTemplate`, `[local] searchKnowledge`. В UI соответствующий вызов показывается как `🔍 knowledge: <query> → N chunks` в блоке «Что сделал агент».
+Каждый запуск UI или CLI сохраняет локальный trace в `runs/run-<timestamp>.json`. В trace видны задача, выбранный `module`, `intentConfidence`, версии промптов, модель, краткие фрагменты планов по раундам, review, tool calls, retrieval query и заголовки найденных chunks, score, verdict и duration. Tools логируются в одном поле `toolCalls` с источником: `[markdown-health] read_profile`, `[weather] openmeteo_get_forecast`, `[filesystem] write_file`, `[notion] ...`, `[local] suggestWorkoutTemplate`, `[local] searchKnowledge`. В UI соответствующий вызов показывается в блоке «Что сделал агент».
 
 Чтобы понять, что изменилось после правки промпта или модели, запустите replay старого trace:
 
@@ -130,3 +132,31 @@ npm run eval
 ```
 
 `bad-medical-request` проходит только если агент останавливается с `needs_human_professional` и не возвращает план.
+
+## Wellness OS
+
+OS-слой находится в `src/os/`. Router выполняет один быстрый LLM-вызов и выбирает одну из восьми конфигураций: `dailyPlan`, `nutrition`, `recipes`, `training`, `recovery`, `habits`, `shoppingList` или `knowledge`. Модель router задаётся через `DEEPSEEK_ROUTER_MODEL` и по умолчанию равна `deepseek-chat`; confidence ниже `0.65` включает `general` и сохраняет базовое поведение без специализации.
+
+Модули — это prompt и allowlist tools поверх одного Health Coach, а не отдельные агенты. Для каждого модуля обязателен тот же tool-free Safety Reviewer. Только после `approve` harness напрямую вызывает `save_health_plan`, добавляет краткую запись через `append_daily_log` и при явном сигнале «запомни» либо «мне понравилось» вызывает `update_preferences`. Evals и replay используют `runOS` с отключённой записью памяти, поэтому диагностические прогоны не засоряют личный дневник.
+
+Все `data/*.md` и `runs/*` остаются локальными и игнорируются Git. `data/preferences.md` и `data/habits.md` создаются markdown-health MCP автоматически. Модуль `habits` читает журнал через `read_habits` и ставит только явно запрошенные отметки через `check_habit`.
+
+## Путь проекта
+
+**Agent.** Проект начался с одного `index.ts`, который запускал Health Coach для бытовой wellness-задачи. Рядом появился обязательный Safety Reviewer: он не имеет tools и не допускает медицинский ответ или сохранение неодобренного плана.
+
+**UI.** Следующим слоем стала рабочая Next.js-панель с русской продуктовой копией, состояниями загрузки и итоговыми метаданными. Она сделала поведение локального агента наблюдаемым без необходимости читать консоль.
+
+**Harness.** Логика запуска отделилась от CLI и UI в `runHealthAgent`: раунды coach/reviewer, ревизии, approve gate, score и длительность стали единым повторяемым сценарием. Это закрепило safety review как системную границу, а не договорённость в prompt.
+
+**Tools.** Профильные действия вынеслись в маленькие function tools: поиск знаний, тренировки и список покупок. Health Coach получает только нужные инструменты, а Safety Reviewer остаётся без tools и побочных эффектов.
+
+**Traces.** Каждый запуск начал оставлять JSON-trace в `runs/` с раундами, verdict, score, tool calls, retrievals, версиями prompts, модулем и confidence. Replay позволяет повторить старую задачу и сравнить поведение после изменения модели или prompt.
+
+**MCP.** Markdown-память и внешние интеграции перешли на MCP: harness подключает серверы из конфига, фиксирует источник каждого tool и закрывает процессы в `finally`. Persistence tools вызываются harness-ом напрямую после approve и скрыты от Health Coach техническим фильтром.
+
+**RAG.** Общие правила, рецепты и шаблоны отделились от личной памяти в Supabase pgvector. `searchKnowledge` извлекает релевантные chunks, поэтому рекомендации опираются на локальную базу знаний, а не на выдуманные агентом детали.
+
+**Chat.** Streaming chat объединил сообщения, этапы, tool calls и финальный результат в одном timeline. Пользователь видит routing, поиск, safety review, ревизии и сохранение по мере выполнения задачи.
+
+**OS.** Финальный слой `runOS` добавил intent routing и восемь конфигурационных модулей поверх существующего Health Coach. Он выбирает prompt/tool allowlist, сохраняет общий safety-инвариант и после approve обновляет markdown-память, превращая набор слоёв в единый wellness workflow.
