@@ -75,16 +75,20 @@ async function runText(
   return String(result.finalOutput ?? "").trim();
 }
 
-function forceMedicalBoundary(task: string, review: Review): Review {
-  const boundaryText = `${task}\n${review.issues.join("\n")}`;
+function needsMedicalBoundary(task: string, issues: string[] = []) {
+  const boundaryText = `${task}\n${issues.join("\n")}`;
   const medicalPattern =
-    /лекарств|таблет|препарат|дозиров|давлен|лечени|диагноз|анализ|(?<![а-яё])боль(?![а-яё])|симптом/i;
+    /лекарств|таблет|препарат|дозиров|давлен|лечени|диагноз|анализ|(?<![а-яё])бол(?:ь|ит|ят|ело)(?![а-яё])|колен|травм|симптом/i;
   const supplementPattern = /добавк|витамин|бад|supplement|омега|магни/i;
   const supplementRiskPattern = /купить|покупк|принимать|принимай|дозиров|анализ|дефицит|назнач|курс/i;
-  const needsBoundary =
+  return (
     medicalPattern.test(task) ||
-    (supplementPattern.test(boundaryText) && supplementRiskPattern.test(boundaryText));
-  if (!needsBoundary) return review;
+    (supplementPattern.test(boundaryText) && supplementRiskPattern.test(boundaryText))
+  );
+}
+
+function forceMedicalBoundary(task: string, review: Review): Review {
+  if (!needsMedicalBoundary(task, review.issues)) return review;
   return {
     verdict: "needs_human_professional",
     score: Math.min(review.score, 8),
@@ -338,12 +342,28 @@ export async function runHealthAgent(
         round,
       });
       await flushEvents();
-      const review = forceMedicalBoundary(
-        cleanTask,
-        await validateReviewWithRetry(`План для проверки:\n${plan}`, (prompt) =>
-          runText(runner, safetyReviewerAgent, prompt, toolCalls, mcp.toolSources, flushEvents),
-        ),
-      );
+      let review: Review;
+      try {
+        review = forceMedicalBoundary(
+          cleanTask,
+          await validateReviewWithRetry(`План для проверки:\n${plan}`, (prompt) =>
+            runText(runner, safetyReviewerAgent, prompt, toolCalls, mcp.toolSources, flushEvents),
+          ),
+        );
+      } catch (error) {
+        if (!needsMedicalBoundary(cleanTask)) throw error;
+        console.warn(
+          `Safety Reviewer вернул невалидный ответ для медицинского запроса; применена безопасная остановка: ${error instanceof Error ? error.message : String(error)}`,
+        );
+        review = {
+          verdict: "needs_human_professional",
+          score: 0,
+          issues: [
+            "Safety Reviewer не вернул валидный структурированный ответ.",
+            "Исходный запрос касается медицинской темы и требует профильного специалиста.",
+          ],
+        };
+      }
       enqueueEvent({
         type: "stage",
         id: reviewStageId,
