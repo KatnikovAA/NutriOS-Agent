@@ -8,8 +8,11 @@ export type ToolSource = McpServerConfig["name"] | "local";
 export type ConnectedMcpServers = {
   servers: MCPServerStdio[];
   toolSources: Map<string, ToolSource>;
+  callTool: (name: string, args: Record<string, unknown>) => Promise<unknown>;
   close: () => Promise<void>;
 };
+
+const HARNESS_ONLY_TOOLS = new Set(["save_health_plan", "append_daily_log", "update_preferences"]);
 
 function minimalProcessEnv() {
   const keys = [
@@ -56,7 +59,13 @@ async function ensureRuntimeDirectories() {
   ]);
 }
 
-function createServer(config: McpServerConfig) {
+function isToolAllowed(serverName: string, toolName: string, allowedTools?: string[]) {
+  if (HARNESS_ONLY_TOOLS.has(toolName)) return false;
+  if (!allowedTools) return true;
+  return allowedTools.includes(toolName) || allowedTools.includes(`${serverName}:*`);
+}
+
+function createServer(config: McpServerConfig, allowedTools?: string[]) {
   return new MCPServerStdio({
     name: config.name,
     command: config.command,
@@ -64,6 +73,7 @@ function createServer(config: McpServerConfig) {
     env: resolveEnv(config),
     cwd: process.cwd(),
     clientSessionTimeoutSeconds: config.clientSessionTimeoutSeconds,
+    toolFilter: async (_context, tool) => isToolAllowed(config.name, tool.name, allowedTools),
   });
 }
 
@@ -75,7 +85,10 @@ export function extractRawToolName(toolCall: string) {
   return toolCall.replace(/^\[[^\]]+\]\s*/, "");
 }
 
-export async function connectConfiguredMcpServers(names?: string[]): Promise<ConnectedMcpServers> {
+export async function connectConfiguredMcpServers(
+  names?: string[],
+  allowedTools?: string[],
+): Promise<ConnectedMcpServers> {
   await ensureRuntimeDirectories();
 
   const activeConfigs = mcpServerConfigs.filter((config) => isEnabled(config) && (!names || names.includes(config.name)));
@@ -84,7 +97,7 @@ export async function connectConfiguredMcpServers(names?: string[]): Promise<Con
 
   try {
     for (const config of activeConfigs) {
-      const server = createServer(config);
+      const server = createServer(config, allowedTools);
       await server.connect();
       connected.push({ config, server });
 
@@ -101,6 +114,12 @@ export async function connectConfiguredMcpServers(names?: string[]): Promise<Con
   return {
     servers: connected.map(({ server }) => server),
     toolSources,
+    callTool: async (name, args) => {
+      const source = toolSources.get(name);
+      const target = connected.find(({ config }) => config.name === source);
+      if (!target) throw new Error(`MCP tool не найден: ${name}`);
+      return target.server.callTool(name, args);
+    },
     close: async () => {
       await Promise.allSettled(connected.map(({ server }) => server.close()));
     },

@@ -1,13 +1,11 @@
-import { Agent, type MCPServer, Runner } from "@openai/agents-core";
+import { Agent, Runner } from "@openai/agents-core";
 import { OpenAIProvider } from "@openai/agents-openai";
 import { createHealthCoachAgent } from "../agents/healthCoach";
 import { createSafetyReviewerAgent } from "../agents/safetyReviewer";
 import type { KnowledgeRetrievalTrace } from "../rag/types";
-import { createSearchKnowledgeTool } from "../skills/knowledge";
-import { createGenerateShoppingListTool } from "../skills/shopping";
-import { createSuggestWorkoutTemplateTool } from "../skills/workouts";
 import { loadEnv } from "./env";
 import type { HealthAgentEvent, HealthAgentResultEvent, HealthAgentRunOptions } from "./events";
+import { createHealthTools } from "./healthTools";
 import { connectConfiguredMcpServers, extractRawToolName, formatToolCallName, type ToolSource } from "./mcpServers";
 import { loadActivePrompts, type ActivePromptVersions } from "./promptVersions";
 import { appendRound, type RoundState } from "./rounds";
@@ -22,6 +20,8 @@ const DEEPSEEK_TOOL_MODEL_SETTINGS = {
 
 export type HealthAgentResult = {
   plan: string | null;
+  module: string;
+  intentConfidence: number;
   review: Review;
   rounds: RoundState[];
   finalScore: number;
@@ -50,9 +50,6 @@ function recordToolCall(toolCalls: string[], toolSources: Map<string, ToolSource
   toolCalls.push(formatToolCallName(name, toolSources));
 }
 
-function hasToolCall(toolCalls: string[], name: string) {
-  return toolCalls.some((toolCall) => extractRawToolName(toolCall) === name);
-}
 
 async function runText(
   runner: Runner,
@@ -103,10 +100,14 @@ function buildResult(
   startTime: number,
   toolCalls: string[],
   retrievals: KnowledgeRetrievalTrace[],
+  module: string,
+  intentConfidence: number,
 ): HealthAgentResult {
   return {
     plan,
     review,
+    module,
+    intentConfidence,
     rounds,
     finalScore: calculateFinalScore(rounds),
     improved: calculateImproved(rounds),
@@ -127,44 +128,24 @@ async function buildAndTraceResult(
   startTime: number,
   toolCalls: string[],
   retrievals: KnowledgeRetrievalTrace[],
+  module: string,
+  intentConfidence: number,
 ) {
-  const result = buildResult(plan, review, rounds, promptVersions, startTime, toolCalls, retrievals);
+  const result = buildResult(
+    plan,
+    review,
+    rounds,
+    promptVersions,
+    startTime,
+    toolCalls,
+    retrievals,
+    module,
+    intentConfidence,
+  );
   await traceRun(task, model, result);
   return result;
 }
 
-async function saveApprovedPlanWithMcp(
-  runner: Runner,
-  instructions: string,
-  plan: string,
-  mcpServers: MCPServer[],
-  toolCalls: string[],
-  toolSources: Map<string, ToolSource>,
-  flushEvents: () => Promise<void>,
-) {
-  const beforeCount = toolCalls.length;
-  const savingAgent = createHealthCoachAgent(instructions, [], {
-    mcpServers,
-    modelSettings: DEEPSEEK_TOOL_MODEL_SETTINGS,
-    toolUseBehavior: { stopAtToolNames: ["save_health_plan"] },
-  });
-
-  // Harness controls persistence: this save path runs only after approve.
-  // DeepSeek thinking-mode rejects forced toolChoice, so we verify the call and allow one retry.
-  for (let attempt = 1; attempt <= 2; attempt++) {
-    await runText(
-      runner,
-      savingAgent,
-      `Safety reviewer вернул verdict=approve. Вызови только tool save_health_plan и сохрани этот финальный план без изменений. Не отвечай текстом вместо tool-вызова.\n\n${plan}`,
-      toolCalls,
-      toolSources,
-      flushEvents,
-    );
-    if (hasToolCall(toolCalls.slice(beforeCount), "save_health_plan")) return;
-  }
-
-  throw new Error("Финальный план одобрен, но save_health_plan не был вызван после двух попыток");
-}
 
 export async function runHealthAgent(
   task: string,
@@ -176,6 +157,8 @@ export async function runHealthAgent(
   const cleanTask = task.trim();
   if (!cleanTask) throw new Error("Передай непустую задачу");
   if (!Number.isInteger(maxRounds) || maxRounds < 1) throw new Error("maxRounds должен быть целым числом больше 0");
+  const moduleName = options.module ?? "general";
+  const intentConfidence = options.intentConfidence ?? 0;
 
   const apiKey = process.env.DEEPSEEK_API_KEY;
   const baseURL = process.env.DEEPSEEK_BASE_URL ?? "https://api.deepseek.com";
@@ -186,9 +169,13 @@ export async function runHealthAgent(
   const modelProvider = new OpenAIProvider({ apiKey, baseURL, useResponses: false });
   const runner = new Runner({ model, modelProvider, tracingDisabled: true });
   const { prompts, versions } = await loadActivePrompts();
+  const modulePrompt = options.specialization?.prompt.trim();
+  const coachInstructions = modulePrompt
+    ? `${prompts.coach}\n\n# Специализация модуля\n\n${modulePrompt}`
+    : prompts.coach;
   const toolCalls: string[] = [];
   const retrievals: KnowledgeRetrievalTrace[] = [];
-  const mcp = await connectConfiguredMcpServers();
+  const mcp = await connectConfiguredMcpServers(undefined, options.specialization?.tools);
   let eventQueue: Promise<void> = Promise.resolve();
   const enqueueEvent = (event: HealthAgentEvent) => {
     eventQueue = eventQueue.then(async () => {
@@ -201,6 +188,8 @@ export async function runHealthAgent(
       type: "result",
       id: "result",
       review: result.review,
+      module: result.module,
+      intentConfidence: result.intentConfidence,
       rounds: result.rounds.map(({ round, review }) => ({ round, review })),
       finalScore: result.finalScore,
       improved: result.improved,
@@ -260,6 +249,24 @@ export async function runHealthAgent(
     }
   });
 
+  const callMcpTool = async (name: string, args: Record<string, unknown>) => {
+    const configuredSource = mcp.toolSources.get(name);
+    if (!configuredSource || configuredSource === "local") throw new Error(`MCP tool не найден: ${name}`);
+    toolEventIndex += 1;
+    enqueueEvent({
+      type: "tool_call",
+      id: `tool-${toolEventIndex}`,
+      name,
+      formattedName: formatToolCallName(name, mcp.toolSources),
+      source: "mcp",
+      server: configuredSource,
+    });
+    await flushEvents();
+    const result = await mcp.callTool(name, args);
+    recordToolCall(toolCalls, mcp.toolSources, name);
+    return result;
+  };
+
   const recordLocalToolCall = (name: string) => recordToolCall(toolCalls, mcp.toolSources, name);
   const recordKnowledgeRetrieval = (event: KnowledgeRetrievalTrace) => {
     recordLocalToolCall("searchKnowledge");
@@ -281,13 +288,13 @@ export async function runHealthAgent(
   };
 
   try {
+    const healthTools = createHealthTools(options.specialization?.tools, {
+      onKnowledgeRetrieval: recordKnowledgeRetrieval,
+      onLocalToolCall: recordLocalToolCall,
+    });
     const healthCoachAgent = createHealthCoachAgent(
-      prompts.coach,
-      [
-        createSearchKnowledgeTool(recordKnowledgeRetrieval),
-        createSuggestWorkoutTemplateTool(recordLocalToolCall),
-        createGenerateShoppingListTool(recordLocalToolCall),
-      ],
+      coachInstructions,
+      healthTools,
       { mcpServers: mcp.servers, modelSettings: DEEPSEEK_TOOL_MODEL_SETTINGS },
     );
     const safetyReviewerAgent = createSafetyReviewerAgent(prompts.reviewer);
@@ -319,6 +326,8 @@ export async function runHealthAgent(
     await flushEvents();
     let rounds: RoundState[] = [];
 
+    // System invariant: every module uses this same tool-free Safety Reviewer loop;
+    // specialization can change coach prompts/tools, never review or persistence gates.
     for (let round = 1; round <= maxRounds; round++) {
       const reviewStageId = `reviewing-safety-${round}`;
       enqueueEvent({
@@ -362,21 +371,20 @@ export async function runHealthAgent(
           startTime,
           toolCalls,
           retrievals,
+          moduleName,
+          intentConfidence,
         );
         await emitResult(result);
         return result;
       }
       if (review.verdict === "approve") {
-        await saveApprovedPlanWithMcp(
-          runner,
-          prompts.coach,
+        await callMcpTool("save_health_plan", { markdown: plan });
+        await options.onApproved?.({
+          task: cleanTask,
           plan,
-          mcp.servers,
-          toolCalls,
-          mcp.toolSources,
-          flushEvents,
-        );
-        await flushEvents();
+          module: moduleName,
+          callMcpTool,
+        });
         enqueueEvent({
           type: "stage",
           id: "final-approved-plan",
@@ -397,6 +405,8 @@ export async function runHealthAgent(
           startTime,
           toolCalls,
           retrievals,
+          moduleName,
+          intentConfidence,
         );
         await emitResult(result);
         return result;
@@ -441,6 +451,8 @@ export async function runHealthAgent(
         startTime,
         toolCalls,
         retrievals,
+        moduleName,
+        intentConfidence,
       );
     }
     throw new Error(`Не удалось получить approve за ${maxRounds} раунда ревизии`);

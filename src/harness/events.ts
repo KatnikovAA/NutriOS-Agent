@@ -2,6 +2,28 @@ import type { KnowledgeRetrievalTrace } from "../rag/types";
 import type { ActivePromptVersions } from "./promptVersions";
 import type { Review } from "./validateReview";
 
+export type McpToolInvoker = (name: string, args: Record<string, unknown>) => Promise<unknown>;
+
+export type HealthAgentSpecialization = {
+  prompt: string;
+  tools: string[];
+};
+
+export type ApprovedRunContext = {
+  task: string;
+  plan: string;
+  module: string;
+  callMcpTool: McpToolInvoker;
+};
+
+export type HealthAgentModuleEvent = {
+  type: "module";
+  id: "module-selection";
+  module: string;
+  confidence: number;
+};
+
+
 export type HealthAgentStage =
   | "reading_profile"
   | "searching_knowledge"
@@ -40,6 +62,8 @@ export type HealthAgentRoundEvent = {
 export type HealthAgentResultEvent = {
   type: "result";
   id: "result";
+  module: string;
+  intentConfidence: number;
   review: Review;
   rounds: HealthAgentRoundEvent[];
   finalScore: number;
@@ -50,10 +74,18 @@ export type HealthAgentResultEvent = {
   retrievals: KnowledgeRetrievalTrace[];
 };
 
-export type HealthAgentEvent = HealthAgentStageEvent | HealthAgentToolCallEvent | HealthAgentResultEvent;
+export type HealthAgentEvent =
+  | HealthAgentModuleEvent
+  | HealthAgentStageEvent
+  | HealthAgentToolCallEvent
+  | HealthAgentResultEvent;
 
 export type HealthAgentEventHandler = (event: HealthAgentEvent) => void | Promise<void>;
 
 export type HealthAgentRunOptions = {
   onEvent?: HealthAgentEventHandler;
+  module?: string;
+  intentConfidence?: number;
+  specialization?: HealthAgentSpecialization;
+  onApproved?: (context: ApprovedRunContext) => Promise<void>;
 };

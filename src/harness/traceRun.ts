@@ -5,6 +5,8 @@ import type { HealthAgentResult } from "./runHealthAgent";
 export type RunTrace = {
   runId: string;
   task: string;
+  module: string;
+  intentConfidence: number;
   promptVersions: HealthAgentResult["promptVersions"];
   model: string;
   rounds: {
@@ -30,6 +32,8 @@ export async function traceRun(task: string, model: string, result: HealthAgentR
   const trace: RunTrace = {
     runId,
     task,
+    module: result.module,
+    intentConfidence: result.intentConfidence,
     promptVersions: result.promptVersions,
     model,
     rounds: result.rounds.map((round) => ({
