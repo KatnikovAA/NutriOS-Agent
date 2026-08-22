@@ -1,4 +1,4 @@
-import { runHealthAgent } from "../../../../src/harness/runHealthAgent";
+import { runOS } from "../../../../src/os/runOS";
 
 export const runtime = "nodejs";
 
@@ -15,7 +15,7 @@ export async function POST(request: Request) {
       return Response.json({ error: "maxRounds должен быть целым числом больше 0" }, { status: 400 });
     }
     const maxRounds = typeof body.maxRounds === "number" ? body.maxRounds : undefined;
-    return Response.json(await runHealthAgent(body.task, maxRounds));
+    return Response.json(await runOS(body.task, maxRounds));
   } catch (error) {
     const message = error instanceof Error ? error.message : "Не удалось запустить агента";
     return Response.json({ error: message }, { status: 500 });

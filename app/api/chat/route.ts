@@ -6,7 +6,7 @@ import {
 
 import type { ChatMessage } from "../../../src/chat/types";
 import type { HealthAgentResultEvent } from "../../../src/harness/events";
-import { runHealthAgent } from "../../../src/harness/runHealthAgent";
+import { runOS } from "../../../src/os/runOS";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
@@ -63,13 +63,15 @@ export async function POST(request: Request) {
     originalMessages: [message],
     async execute({ writer }) {
       let resultEvent: HealthAgentResultEvent | undefined;
-      const result = await runHealthAgent(task, undefined, {
+      const result = await runOS(task, undefined, {
         onEvent(event) {
-          if (event.type === "stage") {
+          if (event.type === "module") {
+            writer.write({ type: "data-module", id: event.id, data: event });
+          } else if (event.type === "stage") {
             writer.write({ type: "data-stage", id: event.id, data: event });
           } else if (event.type === "tool_call") {
             writer.write({ type: "data-toolCall", id: event.id, data: event });
-          } else {
+          } else if (event.type === "result") {
             resultEvent = event;
           }
         },

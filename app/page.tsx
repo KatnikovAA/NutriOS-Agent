@@ -9,6 +9,7 @@ import { NotionSaveAction } from "../components/chat/notion-save-action";
 import type { ChatMessage } from "../src/chat/types";
 import type {
   HealthAgentResultEvent,
+  HealthAgentModuleEvent,
   HealthAgentStageEvent,
   HealthAgentToolCallEvent,
 } from "../src/harness/events";
@@ -59,6 +60,10 @@ function getStageRank(event: HealthAgentStageEvent) {
 }
 
 function getAssistantData(message: ChatMessage) {
+  const moduleEvent = message.parts
+    .filter((part) => part.type === "data-module")
+    .map((part) => part.data)
+    .at(-1);
   const stages = message.parts
     .filter((part) => part.type === "data-stage")
     .map((part) => part.data)
@@ -68,7 +73,7 @@ function getAssistantData(message: ChatMessage) {
     .filter((part) => part.type === "data-result")
     .map((part) => part.data)
     .at(-1);
-  return { stages, tools, result };
+  return { moduleEvent, stages, tools, result };
 }
 
 function StatusMark({ active }: { active: boolean }) {
@@ -80,6 +85,24 @@ function StatusMark({ active }: { active: boolean }) {
     </span>
   );
 }
+
+function ModuleRow({ event }: { event: HealthAgentModuleEvent }) {
+  const confidence = Math.round(event.confidence * 100);
+  return (
+    <li className="flex items-center gap-3 py-2">
+      <span aria-hidden="true" className="flex size-4 shrink-0 items-center justify-center text-sm">
+        🧭
+      </span>
+      <div className="flex min-w-0 flex-1 flex-wrap items-baseline justify-between gap-x-3 gap-y-1">
+        <span className="text-sm font-medium">
+          Module: <span className="font-mono text-primary">{event.module}</span>
+        </span>
+        <span className="text-xs tabular-nums text-muted-foreground">{confidence}% confidence</span>
+      </div>
+    </li>
+  );
+}
+
 
 function StageRow({ event }: { event: HealthAgentStageEvent }) {
   const label =
@@ -146,6 +169,7 @@ function ResultSummary({ event }: { event: HealthAgentResultEvent }) {
       </details>
       <footer className="mt-3 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs text-muted-foreground">
         <span className="font-semibold text-foreground">{verdictLabels[event.review.verdict]}</span>
+        <span className="font-mono">Module {event.module} · {Math.round(event.intentConfidence * 100)}%</span>
         <span className="tabular-nums">Score {event.finalScore}/10</span>
         <span>Improved: {event.improved ? "да" : "нет"}</span>
         <span className="tabular-nums">{formatDuration(event.durationMs)}</span>
@@ -171,7 +195,7 @@ function ProfessionalCard({ result }: { result: HealthAgentResultEvent }) {
 
 function AssistantMessage({ message, running }: { message: ChatMessage; running: boolean }) {
   const text = getMessageText(message);
-  const { stages, tools, result } = getAssistantData(message);
+  const { moduleEvent, stages, tools, result } = getAssistantData(message);
   const needsProfessional = result?.review.verdict === "needs_human_professional";
 
   return (
@@ -186,15 +210,16 @@ function AssistantMessage({ message, running }: { message: ChatMessage; running:
         </div>
       </header>
 
-      {stages.length > 0 || tools.length > 0 ? (
+      {moduleEvent || stages.length > 0 || tools.length > 0 ? (
         <details open={running || !result} className="group rounded-xl border bg-card/80 px-3 py-2.5">
           <summary className="flex cursor-pointer list-none items-center gap-2 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">
             <span>Ход выполнения</span>
-            <span className="text-xs tabular-nums text-muted-foreground">{stages.length + tools.length}</span>
+            <span className="text-xs tabular-nums text-muted-foreground">{stages.length + tools.length + (moduleEvent ? 1 : 0)}</span>
             <span className="ml-auto text-muted-foreground transition-transform group-open:rotate-180">⌄</span>
           </summary>
-          {stages.length > 0 ? (
+          {moduleEvent || stages.length > 0 ? (
             <ol className="mt-2 divide-y">
+              {moduleEvent ? <ModuleRow event={moduleEvent} /> : null}
               {stages.map((stage) => <StageRow key={stage.id} event={stage} />)}
             </ol>
           ) : null}
