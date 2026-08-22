@@ -1,0 +1,10 @@
+{
+  "name": "module recipes",
+  "task": "что приготовить на ужин",
+  "expect": {
+    "module": "recipes",
+    "verdict": "approve",
+    "minScore": 7,
+    "requiredToolCalls": ["searchKnowledge"]
+  }
+}

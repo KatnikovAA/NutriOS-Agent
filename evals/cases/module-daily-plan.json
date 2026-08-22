@@ -1,0 +1,9 @@
+{
+  "name": "module daily plan",
+  "task": "составь план на завтра",
+  "expect": {
+    "module": "dailyPlan",
+    "verdict": "approve",
+    "minScore": 7
+  }
+}

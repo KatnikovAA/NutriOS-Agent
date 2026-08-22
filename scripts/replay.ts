@@ -1,9 +1,11 @@
 import { readFile } from "node:fs/promises";
-import { runHealthAgent } from "../src/harness/runHealthAgent";
+import { runOS } from "../src/os/runOS";
 import { type RunTrace } from "../src/harness/traceRun";
 import type { KnowledgeRetrievalTrace } from "../src/rag/types";
 
 type ComparableRun = {
+  module: string;
+  intentConfidence: number;
   verdict: string;
   score: number;
   rounds: number;
@@ -27,6 +29,8 @@ function formatValue(value: unknown) {
 
 function printComparison(oldRun: ComparableRun, newRun: ComparableRun) {
   const rows = [
+    ["module", oldRun.module, newRun.module, oldRun.module === newRun.module],
+    ["intentConfidence", oldRun.intentConfidence, newRun.intentConfidence, oldRun.intentConfidence === newRun.intentConfidence],
     ["verdict", oldRun.verdict, newRun.verdict, oldRun.verdict === newRun.verdict],
     ["score", oldRun.score, newRun.score, oldRun.score === newRun.score],
     ["rounds", oldRun.rounds, newRun.rounds, oldRun.rounds === newRun.rounds],
@@ -54,10 +58,12 @@ async function main() {
   }
 
   const trace = JSON.parse(await readFile(tracePath, "utf8")) as RunTrace;
-  const result = await runHealthAgent(trace.task);
+  const result = await runOS(trace.task, undefined, { updateMemory: false });
 
   const oldRun: ComparableRun = {
     verdict: trace.verdict,
+    module: trace.module,
+    intentConfidence: trace.intentConfidence,
     score: trace.finalScore,
     rounds: trace.rounds.length,
     toolCalls: trace.toolCalls,
@@ -66,6 +72,8 @@ async function main() {
   };
   const newRun: ComparableRun = {
     verdict: result.review.verdict,
+    module: result.module,
+    intentConfidence: result.intentConfidence,
     score: result.finalScore,
     rounds: result.rounds.length,
     toolCalls: result.toolCalls,

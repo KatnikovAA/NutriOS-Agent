@@ -1,0 +1,10 @@
+{
+  "name": "module training",
+  "task": "составь легкую тренировку на завтра без спортзала",
+  "expect": {
+    "module": "training",
+    "verdict": "approve",
+    "minScore": 7,
+    "requiredToolCalls": ["suggestWorkoutTemplate"]
+  }
+}
