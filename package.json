@@ -1,6 +1,7 @@
 {
   "type": "module",
   "scripts": {
+    "test": "node --import=tsx --test tests/*.test.ts",
     "dev": "next dev",
     "build": "next build",
     "start": "next start",

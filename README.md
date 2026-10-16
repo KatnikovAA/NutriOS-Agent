@@ -249,10 +249,23 @@ docs/                 SQL-схемы и техническая документ�
 
 ## Основные команды
 
+### Автоматические проверки
+
+```bash
+npm ci
+npm test
+npm run build
+```
+
+GitHub Actions запускает workflow [CI](.github/workflows/ci.yml) при push и pull request на Node.js 22 и 24. Проверки включают offline-тесты встроенным Node test runner и production-сборку с проверкой TypeScript. API-ключи, Supabase, Ollama и личные markdown-файлы для этих проверок не требуются.
+
+Тесты проверяют валидацию и повторный запрос Safety Reviewer, обработку ошибок, обновление памяти, расчёт результатов и загрузку конфигураций всех восьми модулей. Они не проверяют качество ответов удалённой модели; для этого отдельно доступен `npm run eval`, которому нужны настроенные внешние сервисы.
+
 | Команда | Назначение |
 | --- | --- |
 | `npm run dev` | Запустить локальный Next.js-сервер |
 | `npm run build` | Проверить типы и собрать production bundle |
+| `npm test` | Запустить offline-тесты без API-ключей |
 | `npm run start` | Запустить production-сборку |
 | `npm run cli -- "..."` | Выполнить задачу через CLI |
 | `npm run ingest` | Переиндексировать базу знаний в Supabase |
