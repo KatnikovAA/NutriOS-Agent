@@ -1,162 +1,263 @@
-# NutriOS-Agent
+<div align="center">
 
-Простое локальное Next.js-приложение с wellness-агентом. Агент читает профиль и дневник из markdown-файлов, ищет рекомендации в RAG-базе знаний, генерирует план, проверяет его safety-reviewer-агентом и сохраняет результат.
+# NutriOS Agent
 
-## Запуск UI
+**Локальная wellness OS с intent routing, RAG, MCP-интеграциями и обязательной safety-проверкой каждого ответа.**
+
+[![Next.js](https://img.shields.io/badge/Next.js-16.2.9-000000?logo=nextdotjs)](https://nextjs.org/)
+[![React](https://img.shields.io/badge/React-19.2-149ECA?logo=react&logoColor=white)](https://react.dev/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.9-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org/)
+[![MCP](https://img.shields.io/badge/MCP-enabled-5A67D8)](https://modelcontextprotocol.io/)
+[![Supabase](https://img.shields.io/badge/Supabase-pgvector-3FCF8E?logo=supabase&logoColor=white)](https://supabase.com/)
+
+</div>
+
+NutriOS Agent превращает свободный запрос пользователя в безопасный персональный wellness-план. Система определяет намерение, выбирает профильный модуль и разрешённые инструменты, извлекает знания из RAG, проводит независимый safety review и только после одобрения сохраняет результат и обновляет локальную память.
+
+> [!IMPORTANT]
+> NutriOS Agent не ставит диагнозы и не заменяет врача. Запросы о боли, лечении, лекарствах и других медицинских темах останавливаются до сохранения плана и направляются к профильному специалисту.
+
+## Возможности
+
+- **Streaming chat UI** — этапы выполнения, выбранный модуль, tool calls, safety review и итоговый ответ появляются в едином timeline.
+- **Intent routing** — один быстрый LLM-вызов выбирает профильную конфигурацию; низкая уверенность включает безопасный `general`-режим.
+- **Восемь wellness-модулей** — дневной план, питание, рецепты, тренировки, восстановление, привычки, покупки и поиск знаний.
+- **Обязательный Safety Reviewer** — единый tool-free reviewer проверяет каждый модуль и блокирует persistence до `approve`.
+- **RAG вместо выдуманных деталей** — правила, рецепты и шаблоны извлекаются из Supabase pgvector; embeddings вычисляются локально через Ollama.
+- **MCP-интеграции** — локальная markdown-память, ограниченный filesystem, погода Open-Meteo и опциональное сохранение в Notion.
+- **Наблюдаемость** — каждый запуск оставляет JSON-trace с раундами, verdict, score, tool calls, retrievals и версиями prompts.
+- **Harness-level memory** — дневник и подтверждённые предпочтения обновляются orchestration-кодом только после safety approve.
+
+## Как это работает
+
+```mermaid
+flowchart LR
+    U[Пользователь] --> UI[Streaming Chat / CLI]
+    UI --> R[Intent Router]
+    R --> M[Профильный модуль]
+    M --> HC[Health Coach]
+    HC --> T[Local tools / MCP / RAG]
+    T --> HC
+    HC --> SR{Safety Reviewer}
+    SR -->|revise| HC
+    SR -->|needs human| STOP[Безопасная остановка]
+    SR -->|approve| P[Сохранение плана]
+    P --> MEM[Log + preferences + habits]
+```
+
+Модуль — это специализированный prompt и allowlist инструментов поверх одного Health Coach, а не отдельный агент. Такая схема сохраняет единый execution loop и одинаковую safety-границу для всех типов задач.
+
+| Модуль | Назначение |
+| --- | --- |
+| `dailyPlan` | Целостный план дня: питание, активность и восстановление |
+| `nutrition` | Рацион, структура приёмов пищи и пищевые привычки |
+| `recipes` | Подбор рецептов и подготовка списка покупок |
+| `training` | Тренировочные планы с учётом уровня и инвентаря |
+| `recovery` | Сон, нагрузка, стресс и немедицинское восстановление |
+| `habits` | Чтение и отметка локальных привычек |
+| `shoppingList` | Практичный список покупок по плану или меню |
+| `knowledge` | Ответы на основе локальной базы знаний |
+
+## Технологии
+
+| Слой | Используется |
+| --- | --- |
+| Интерфейс | Next.js App Router, React, Tailwind CSS, shadcn-style primitives |
+| Agent runtime | OpenAI Agents SDK с OpenAI-compatible DeepSeek API |
+| Оркестрация | TypeScript harness, review loop, versioned prompts, event stream |
+| Инструменты | MCP stdio servers и локальные function tools |
+| RAG | Supabase Postgres, pgvector, Ollama, `bge-m3` |
+| Валидация | Zod schemas и structured reviewer output |
+| Наблюдаемость | JSON traces, replay, score и метаданные запуска |
+
+## Быстрый старт
+
+### Требования
+
+- Node.js `>= 20.9.0`;
+- npm;
+- API-ключ DeepSeek или другого совместимого endpoint;
+- Git.
+
+Для RAG дополнительно нужны Supabase и локальный [Ollama](https://ollama.com/). Notion подключается опционально.
+
+### 1. Клонируйте репозиторий
+
+```bash
+git clone https://github.com/KatnikovAA/NutriOS-Agent.git
+cd NutriOS-Agent
+npm install
+```
+
+### 2. Настройте окружение
+
+Создайте `.env` в корне проекта:
+
+```dotenv
+# Обязательно
+DEEPSEEK_API_KEY=<your-deepseek-api-key>
+
+# Опционально: OpenAI-compatible endpoint и модели
+DEEPSEEK_BASE_URL=https://api.deepseek.com
+DEEPSEEK_MODEL=deepseek-v4-flash
+DEEPSEEK_ROUTER_MODEL=deepseek-chat
+```
+
+> [!CAUTION]
+> Никогда не коммитьте `.env`. Файл уже добавлен в `.gitignore`; все секреты используются только server-side.
+
+### 3. Подготовьте локальную память
+
+Создайте каталог `data/` и три markdown-файла:
+
+| Файл | Содержимое |
+| --- | --- |
+| `data/profile.md` | Цели, ограничения, предпочтения, активность, сон и доступный инвентарь |
+| `data/log.md` | Дневник питания, энергии, сна, активности и восстановления |
+| `data/recipes.md` | Любимые рецепты и удобные варианты блюд |
+
+`output.md`, `preferences.md` и `habits.md` создаются и обновляются во время работы. Личные `data/*.md` не отслеживаются Git.
+
+### 4. Запустите приложение
 
 ```bash
 npm run dev
 ```
 
-Откройте `http://localhost:3000`, введите задачу и нажмите `Run Agent`.
+Откройте [http://localhost:3000](http://localhost:3000) и отправьте wellness-запрос, например: `Составь план на завтра с учётом моего профиля`.
 
-## Данные
+Для production-сборки:
 
-- `data/profile.md` — профиль пользователя;
-- `data/log.md` — дневник последних дней;
-- `data/recipes.md` — локальные любимые рецепты;
-- `data/output.md` — последний одобренный план.
-- `data/preferences.md` — подтверждённые явные предпочтения;
-- `data/habits.md` — минимальный журнал отметок привычек;
-- `plans/` — дополнительные markdown-файлы планов, которые агент может создавать через filesystem MCP по явной просьбе пользователя.
-
-## Настройка RAG
-
-Embeddings вычисляются локально через Ollama и модель `bge-m3`, а chunks хранятся в Supabase Postgres с расширением pgvector. Установите модель командой `ollama pull bge-m3` и убедитесь, что Ollama доступен на `http://127.0.0.1:11434`. Затем выполните SQL-файлы в Supabase SQL Editor строго по порядку: сначала `docs/001_create_knowledge_chunks_table.sql`, затем `docs/002_change_knowledge_embedding_to_1024.sql`.
-
-Добавьте server-only настройки в `.env`:
-
-```dotenv
-SUPABASE_URL=https://<project-ref>.supabase.co
-SUPABASE_SERVICE_ROLE_KEY=<sb_secret_... или legacy service_role JWT>
-EMBEDDING_BASE_URL=http://127.0.0.1:11434/v1
-EMBEDDING_API_KEY=ollama
-EMBEDDING_MODEL=bge-m3
-EMBEDDING_DIMENSIONS=1024
+```bash
+npm run build
+npm run start
 ```
 
-Не передавайте `SUPABASE_SERVICE_ROLE_KEY` в браузер и не добавляйте `.env` в Git. Для загрузки пяти файлов из `knowledge/` выполните `npm run ingest`: скрипт вычисляет embeddings, полностью очищает `knowledge_chunks` и записывает ровно 60 секций заново, поэтому повторный запуск не создаёт дублей. Размерность `bge-m3` равна 1024; смена embedding-модели на модель с другой размерностью требует нового пронумерованного SQL-файла в `docs/` и повторного ingest.
+## Подключение RAG
 
-## Memory vs RAG
+RAG отделяет общую базу знаний от персональной памяти. В Supabase хранятся embeddings материалов из `knowledge/`, а `data/profile.md` и `data/log.md` остаются только на локальной машине.
 
-`data/profile.md` и `data/log.md` — личная память агента: они описывают, кто пользователь и что происходило в последние дни. Эти файлы остаются локальными и доступны Health Coach через markdown/MCP. Каталог `knowledge/` — общая база знаний: рецепты, правила питания, шаблоны тренировок и восстановления, то есть то, что агент умеет предложить. Во время ingest секции knowledge получают embeddings и сохраняются в Supabase pgvector, но profile и log туда не попадают. Перед профильной рекомендацией агент ищет релевантные knowledge chunks и использует их содержание вместо выдумывания рецептов. Таким образом, Memory отвечает за персональный контекст «кто ты», а RAG — за проверяемый набор возможностей «что мы умеем».
+1. Создайте проект Supabase.
+2. Выполните в SQL Editor файлы `docs/001_create_knowledge_chunks_table.sql` и `docs/002_change_knowledge_embedding_to_1024.sql` по порядку.
+3. Установите Ollama и загрузите embedding-модель:
 
-## MCP-серверы
+   ```bash
+   ollama pull bge-m3
+   ```
 
-MCP-серверы описаны в `src/mcp/servers.config.ts`. Harness читает этот конфиг, запускает все активные stdio-серверы отдельными процессами, отдаёт их tools агенту единым списком и закрывает процессы в `finally`. Добавление нового MCP-сервера = новая запись в конфиге, без правок orchestration-кода.
+4. Добавьте настройки в `.env`:
 
-| Сервер | Пакет / команда | Что даёт | Авторизация |
-| --- | --- | --- | --- |
-| `markdown-health` | `npx tsx src/mcp/markdownHealthServer.ts` | Профиль, дневник, рецепты, сохранение финального плана в `data/output.md` | Не нужна |
-| `filesystem` | `@modelcontextprotocol/server-filesystem` | Чтение/запись файлов только в `data/` и `plans/` | Не нужна |
-| `weather` | `@cyanheads/open-meteo-mcp-server@0.3.4` | Геокодинг и прогноз Open-Meteo: `openmeteo_search_locations`, `openmeteo_get_forecast` и другие weather tools | Не нужна |
-| `notion` | `@notionhq/notion-mcp-server` | Создание/обновление страниц через Notion API | `NOTION_TOKEN`; без токена сервер пропускается |
+   ```dotenv
+   SUPABASE_URL=https://<project-ref>.supabase.co
+   SUPABASE_SERVICE_ROLE_KEY=<your-server-side-service-role-key>
+   EMBEDDING_BASE_URL=http://127.0.0.1:11434/v1
+   EMBEDDING_API_KEY=ollama
+   EMBEDDING_MODEL=bge-m3
+   EMBEDDING_DIMENSIONS=1024
+   ```
 
-`notion` в конфиге стоит `enabled: false`, но автоматически включается, если в `.env` или окружении есть `NOTION_TOKEN`. Это internal integration token, без OAuth-флоу. В Notion этой integration нужно дать доступ только к странице или базе `Wellness`.
+5. Загрузите базу знаний:
 
-Проверить список MCP tools и resources можно командой:
+   ```bash
+   npm run ingest
+   ```
+
+> [!WARNING]
+> `SUPABASE_SERVICE_ROLE_KEY` обладает повышенными правами. Не используйте префикс `NEXT_PUBLIC_`, не передавайте ключ в браузер и ограничьте его использованием только на сервере.
+
+Файлы `docs/003_verify_knowledge_chunks.sql` и `docs/004_verify_knowledge_rpc_logs.sql` помогают проверить загруженные chunks и вызовы поиска.
+
+## MCP-интеграции
+
+Серверы описаны декларативно в `src/mcp/servers.config.ts` и запускаются harness-ом как отдельные stdio-процессы.
+
+| Сервер | Возможности | Настройка |
+| --- | --- | --- |
+| `markdown-health` | Профиль, дневник, рецепты, preferences, habits, финальный план | Работает локально |
+| `filesystem` | Доступ только к `data/` и `plans/` | Работает локально |
+| `weather` | Геокодинг и прогноз Open-Meteo | Ключ не нужен |
+| `notion` | Сохранение одобренного плана в Notion | Требует `NOTION_TOKEN` |
+
+Чтобы включить Notion:
+
+1. Создайте internal integration в Notion.
+2. Предоставьте ей доступ только к странице или базе `Wellness`.
+3. Добавьте токен в `.env`:
+
+   ```dotenv
+   NOTION_TOKEN=<your-notion-integration-token>
+   ```
+
+4. Перезапустите приложение. После approve в интерфейсе появится возможность сохранить готовый markdown-план в Notion без повторного запуска модели.
+
+Проверить доступные MCP tools и resources:
 
 ```bash
 npm run mcp:inspect
 ```
 
-Команда запускает активные серверы из конфига и печатает tools с источниками, например `[markdown-health] read_profile`, `[filesystem] write_file`, `[weather] openmeteo_get_forecast`. Для собственного markdown-сервера также видны resources:
-
-- `profile://me`
-- `logs://recent`
-- `recipes://all`
-- `plans://latest`
-
-### Демо MCP
-
-```bash
-npm run cli -- "спланируй тренировку на завтра с учётом погоды"
-```
-
-Ожидаемо: агент читает профиль, берёт город из `data/profile.md`, вызывает weather MCP и ссылается на прогноз. Если погода плохая, переносит активность в зал или домой.
-
-```bash
-npm run cli -- "сохрани мой план ещё и в отдельный файл plans/2026-08-18.md"
-```
-
-Ожидаемо: после safety approve финальный план сохраняется в `data/output.md` через `markdown-health`, а отдельный файл создаётся через `filesystem` MCP внутри `plans/`.
-
-```bash
-npm run cli -- "сохрани план страницей в мой Notion"
-```
-
-Ожидаемо при наличии `NOTION_TOKEN`: агент использует Notion MCP tools и создаёт страницу в доступной integration области `Wellness`. Без токена Notion-сервер не поднимается и запуск не ломается.
-
-В UI после approved результата доступна кнопка `Сохранить в Notion`. Она не запускает модель повторно: frontend отправляет готовый markdown-план в `/api/notion/save`, а route сохраняет его дочерней страницей внутри `Wellness` через Notion MCP.
-
-### Guardrails
-
-Принцип: prompt — просьба, config — стена. Промпт объясняет агенту правильное поведение, но настоящие границы доступа задаются конфигом и правами сервера.
-
-- `filesystem`: на уровне запуска сервера разрешены только `data/` и `plans/`; в prompt дополнительно сказано писать планы только в `plans/`.
-- `notion`: техническая граница задаётся правами Notion integration; ей выдаётся доступ только к странице или базе `Wellness`, а prompt просит писать только туда.
-- `weather`: read-only по природе и не требует ключа, поэтому отдельных write-ограничений не нужно.
-
-## До MCP / После MCP
-
-До MCP каждая интеграция подключалась к Health Coach Agent руками как отдельная function tool: профиль, дневник, рецепты и сохранение плана жили рядом с агентом и требовали индивидуальной обвязки.
-
-После MCP интеграции стали конфигом: markdown, filesystem, weather и Notion публикуют tools по стандартному протоколу, а harness только запускает stdio-процессы из `servers.config.ts`. Для агента MCP tools выглядят как обычные инструменты и попадают в тот же `toolCalls` trace. Локальные tools `generateShoppingList` и `suggestWorkoutTemplate` оставлены напрямую, чтобы было видно различие между локальным tool и MCP tool.
-
-Полезные MCP, которые сюда не подключены намеренно: Google Calendar для расписания тренировок (требует OAuth, вынесен за скобки), database/Postgres MCP для долговременной истории вместо markdown, web search MCP для актуальных источников. Для этого проекта сейчас достаточно локального stdio и token-only Notion.
-
 ## CLI
 
-`index.ts` остаётся тонким CLI-враппером, но теперь вызывает `src/os/runOS.ts`: задача проходит intent routing, общий harness и обязательный safety review.
+Тот же OS-flow доступен без браузера:
 
 ```bash
 npm run cli -- "составь план питания на завтра"
+npm run cli -- "подбери тренировку с учётом погоды"
+npm run cli -- "отметь привычку: выпил воду утром"
 ```
 
-Медицинские запросы агент не обрабатывает и направляет к профильному специалисту.
+Медицинский запрос завершится безопасной остановкой и не будет записан как одобренный план.
 
-## Как дебажить агента
+## Локальные данные и traces
 
-Каждый запуск UI или CLI сохраняет локальный trace в `runs/run-<timestamp>.json`. В trace видны задача, выбранный `module`, `intentConfidence`, версии промптов, модель, краткие фрагменты планов по раундам, review, tool calls, retrieval query и заголовки найденных chunks, score, verdict и duration. Tools логируются в одном поле `toolCalls` с источником: `[markdown-health] read_profile`, `[weather] openmeteo_get_forecast`, `[filesystem] write_file`, `[notion] ...`, `[local] suggestWorkoutTemplate`, `[local] searchKnowledge`. В UI соответствующий вызов показывается в блоке «Что сделал агент».
+| Путь | Назначение | Git |
+| --- | --- | --- |
+| `data/*.md` | Профиль, дневник, память, привычки и последний план | Игнорируется |
+| `plans/*.md` | Дополнительные сохранённые планы | Игнорируется |
+| `runs/run-*.json` | Локальные traces запусков | Игнорируется |
+| `knowledge/*.md` | Общая база знаний для ingest | Отслеживается |
+| `prompts/*.md` | Версионированные системные prompts | Отслеживается |
 
-Чтобы понять, что изменилось после правки промпта или модели, запустите replay старого trace:
+Повторить задачу из сохранённого trace:
 
 ```bash
-npm run replay runs/run-XXX.json
+npm run replay runs/run-<timestamp>.json
 ```
 
-Для быстрой проверки safety и типовых wellness-сценариев:
+## Структура проекта
 
-```bash
-npm run eval
+```text
+app/                  Next.js UI и API routes
+components/           UI-примитивы и markdown rendering
+src/agents/           Health Coach и tool-free Safety Reviewer
+src/os/               Intent router, модули и post-approve memory
+src/harness/          Execution loop, events, review, score и traces
+src/mcp/              MCP server и декларативный конфиг интеграций
+src/rag/              Embeddings и поиск по Supabase pgvector
+src/skills/           Локальные function tools
+prompts/              Версионированные и модульные prompts
+knowledge/            Исходная база знаний
+scripts/              Ingest, replay и инспекция MCP
+docs/                 SQL-схемы и техническая документация
 ```
 
-`bad-medical-request` проходит только если агент останавливается с `needs_human_professional` и не возвращает план.
+## Основные команды
 
-## Wellness OS
+| Команда | Назначение |
+| --- | --- |
+| `npm run dev` | Запустить локальный Next.js-сервер |
+| `npm run build` | Проверить типы и собрать production bundle |
+| `npm run start` | Запустить production-сборку |
+| `npm run cli -- "..."` | Выполнить задачу через CLI |
+| `npm run ingest` | Переиндексировать базу знаний в Supabase |
+| `npm run mcp:inspect` | Показать MCP tools и resources |
+| `npm run replay runs/run-<timestamp>.json` | Повторить задачу из trace |
 
-OS-слой находится в `src/os/`. Router выполняет один быстрый LLM-вызов и выбирает одну из восьми конфигураций: `dailyPlan`, `nutrition`, `recipes`, `training`, `recovery`, `habits`, `shoppingList` или `knowledge`. Модель router задаётся через `DEEPSEEK_ROUTER_MODEL` и по умолчанию равна `deepseek-chat`; confidence ниже `0.65` включает `general` и сохраняет базовое поведение без специализации.
+## Safety и границы доступа
 
-Модули — это prompt и allowlist tools поверх одного Health Coach, а не отдельные агенты. Для каждого модуля обязателен тот же tool-free Safety Reviewer. Только после `approve` harness напрямую вызывает `save_health_plan`, добавляет краткую запись через `append_daily_log` и при явном сигнале «запомни» либо «мне понравилось» вызывает `update_preferences`. Evals и replay используют `runOS` с отключённой записью памяти, поэтому диагностические прогоны не засоряют личный дневник.
-
-Все `data/*.md` и `runs/*` остаются локальными и игнорируются Git. `data/preferences.md` и `data/habits.md` создаются markdown-health MCP автоматически. Модуль `habits` читает журнал через `read_habits` и ставит только явно запрошенные отметки через `check_habit`.
-
-## Путь проекта
-
-**Agent.** Проект начался с одного `index.ts`, который запускал Health Coach для бытовой wellness-задачи. Рядом появился обязательный Safety Reviewer: он не имеет tools и не допускает медицинский ответ или сохранение неодобренного плана.
-
-**UI.** Следующим слоем стала рабочая Next.js-панель с русской продуктовой копией, состояниями загрузки и итоговыми метаданными. Она сделала поведение локального агента наблюдаемым без необходимости читать консоль.
-
-**Harness.** Логика запуска отделилась от CLI и UI в `runHealthAgent`: раунды coach/reviewer, ревизии, approve gate, score и длительность стали единым повторяемым сценарием. Это закрепило safety review как системную границу, а не договорённость в prompt.
-
-**Tools.** Профильные действия вынеслись в маленькие function tools: поиск знаний, тренировки и список покупок. Health Coach получает только нужные инструменты, а Safety Reviewer остаётся без tools и побочных эффектов.
-
-**Traces.** Каждый запуск начал оставлять JSON-trace в `runs/` с раундами, verdict, score, tool calls, retrievals, версиями prompts, модулем и confidence. Replay позволяет повторить старую задачу и сравнить поведение после изменения модели или prompt.
-
-**MCP.** Markdown-память и внешние интеграции перешли на MCP: harness подключает серверы из конфига, фиксирует источник каждого tool и закрывает процессы в `finally`. Persistence tools вызываются harness-ом напрямую после approve и скрыты от Health Coach техническим фильтром.
-
-**RAG.** Общие правила, рецепты и шаблоны отделились от личной памяти в Supabase pgvector. `searchKnowledge` извлекает релевантные chunks, поэтому рекомендации опираются на локальную базу знаний, а не на выдуманные агентом детали.
-
-**Chat.** Streaming chat объединил сообщения, этапы, tool calls и финальный результат в одном timeline. Пользователь видит routing, поиск, safety review, ревизии и сохранение по мере выполнения задачи.
-
-**OS.** Финальный слой `runOS` добавил intent routing и восемь конфигурационных модулей поверх существующего Health Coach. Он выбирает prompt/tool allowlist, сохраняет общий safety-инвариант и после approve обновляет markdown-память, превращая набор слоёв в единый wellness workflow.
+- Safety Reviewer не имеет tools и побочных эффектов.
+- Модуль меняет только prompt и allowlist инструментов Health Coach.
+- Persistence tools скрыты от модели и вызываются harness-ом после `approve`.
+- Filesystem MCP ограничен каталогами `data/` и `plans/`.
+- Notion integration ограничивается правами, выданными конкретной странице `Wellness`.
+- Медицинская граница работает fail-closed: явный медицинский запрос останавливается даже при невалидном structured output reviewer-а.
